@@ -1,5 +1,4 @@
 import { all, one, stmt } from "../db";
-import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { isBiliAccountRead, readMedia, type Observation, type ReadRequest } from "./media";
@@ -28,6 +27,9 @@ const videoURL = z
   .regex(/^https:\/\/www\.bilibili\.com\/(?:video\/BV[\da-zA-Z]{10}|bangumi\/play\/ep[1-9]\d{0,15})$/);
 const result = z.object({
   status: z.string().regex(/^[a-z0-9_-]{1,45}$/),
+  resolved:z.object({id:z.string().regex(/^(?:BV[\da-zA-Z]{10}|ep[1-9]\d{0,15})$/),page:z.number().int().min(1).max(10000).optional()}).optional(),
+  filteredCount:z.number().int().nonnegative().optional(),
+  nextPage:z.number().int().positive().optional(),
   nextOffset: z.number().int().nonnegative().optional(),
   atEnd: z.boolean().optional(),
   level: z.enum([
@@ -87,9 +89,7 @@ export async function readWithDesk(
   query: ReadRequest,
   network: Parameters<typeof readMedia>[1] = {},
 ) {
-  const direct = await readMedia(query, {
-    annTransport: env.WHALE_ANN_TRANSPORT, newsSearchKey: env.WHALE_DEEPSEEK_API_KEY, ...network,
-  });
+  const direct = await readMedia(query, network);
   if (
     query.source !== "bili" ||
     isBiliAccountRead(query) ||

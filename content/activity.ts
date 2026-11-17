@@ -4,11 +4,14 @@ import type { ReadRequest, Story } from "../lib/media";
 export type Visibility = "hidden" | "summary" | "detail";
 export type Reading = {
   kind: "reading";
-  source: ReadRequest["source"];
+  source: ReadRequest["source"] | "news" | "museum" | "nasa"; // Historical activities retain their original source.
   action: string;
   level: string;
   status?: string;
   nextOffset?: number;
+  nextPage?: number;
+  filteredCount?: number;
+  coverage?: string;
   atEnd?: boolean;
   items: Story[];
   page?: number;
@@ -64,6 +67,7 @@ export function readingOutcome(r: Pick<Reading,"source"|"action"|"level"|"status
   if ((!r.status || r.status==="ok") && r.source==="bili" && r.action==="open" && r.level==="metadata") return "查看视频简介";
   if (!r.status || r.status === "ok") return levelNames[r.level] ?? "查看条目信息";
   const reasons: Record<string,string> = {
+    no_results:"这次筛选没有匹配条目", end_of_article:"已经到正文末尾", unsupported_source:"这个来源已收起",
     no_subtitles:"没有可读字幕", end_of_subtitles:"已经到字幕末尾", no_frames:"没有可用分镜",
     end_of_frames:"已经到分镜末尾", no_visible_comments:"没有可见评论", needs_login:"需要登录",
     rate_limited:"来源暂时限流", network_error:"连接未成功", unavailable:"内容暂时不可用",

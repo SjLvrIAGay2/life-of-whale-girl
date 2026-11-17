@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
-import { DOMParser } from "@xmldom/xmldom";
 import { z } from "zod";
-import { collections } from "./collections";
 import { hkey } from "./heybox-sign.mjs";
 
 export const historyCursor = z.object({
@@ -9,9 +7,11 @@ export const historyCursor = z.object({
   view_at: z.number().int().positive(),
   business: z.string().regex(/^[a-z][a-z_-]{0,24}$/),
 });
+export const readingSources = ["bili", "heybox"] as const;
+export const readActions = ["browse","search","open","comments","subtitles","frames","history","watch_later"] as const;
 export type ReadRequest = {
-  source: "news" | "bili" | "heybox" | keyof typeof collections;
-  action: "browse" | "search" | "open" | "comments" | "subtitles" | "frames" | "image" | "history" | "watch_later";
+  source: typeof readingSources[number];
+  action: typeof readActions[number];
   query?: string;
   id?: string;
   root?: string;
@@ -34,56 +34,19 @@ export type Observation = {
   frames?: string[];
   nextCursor?: ReadRequest["cursor"];
   nextPage?: number;
+  filteredCount?: number;
+  coverage?: string;
+  resolved?: {id:string;page?:number};
   nextOffset?: number;
   atEnd?: boolean;
 };
 type Network = {
-  annTransport?: { fetch(request: Request): Promise<Response> };
-  newsSearchKey?: string;
   biliCookie?: string;
   heyCookie?: string;
   request?: typeof fetch;
 };
 const userAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
-const feeds: Record<string, string> = {
-  gcores: "https://www.gcores.com/rss",
-  ann: "https://www.animenewsnetwork.com/all/rss.xml?ann-edition=us",
-};
-const annArticle = /^\/(news|interest|review|feature|column|daily-briefs|preview-guide)\//;
-function newsArticle(link: string) {
-  try {
-    const url = new URL(link);
-    if (url.protocol !== "https:" || url.username || url.password || url.port) return;
-    if (url.hostname === "gcores.com" || url.hostname === "animenewsnetwork.com") url.hostname = "www." + url.hostname;
-    if ((url.hostname === "www.gcores.com" && /^\/(?:articles|radios|videos)\/\d+\/?$/.test(url.pathname)) ||
-        (url.hostname === "www.animenewsnetwork.com" && annArticle.test(url.pathname))) {
-      url.search = "";
-      url.hash = "";
-      return url;
-    }
-  } catch { /* Ignore malformed or unsupported search results. */ }
-}
-async function searchNews(q: ReadRequest, net: Network): Promise<Story[]> {
-  const domains = q.id === "ann" ? ["animenewsnetwork.com"] : q.id === "gcores" ? ["gcores.com"] : ["gcores.com", "animenewsnetwork.com"];
-  const query = q.query!.trim().slice(0, 70) + " " + domains.map(d => "site:" + d).join(" OR ");
-  const response = await (net.request ?? fetch)("https://api.deepseek.com/v1/tools/search", {
-    method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + net.newsSearchKey },
-    body: JSON.stringify({ query, count: 8, need_content: false }),
-    redirect: "error", signal: AbortSignal.timeout(12000),
-  });
-  if (!response.ok) return [];
-  const { results } = await response.json<{ results?: { title?: string; url?: string }[] }>();
-  const items = new Map<string, Story>();
-  for (const row of results ?? []) {
-    const url = row.url && newsArticle(row.url);
-    const title = plain(row.title ?? "", 140);
-    if (url && title && domains.includes(url.hostname.slice(4))) {
-      items.set(url.href, { id: url.href, title, url: url.href, body: "" });
-    }
-  }
-  return [...items.values()].slice(0, 8);
-}
 export function plain(value: unknown, max = 450) {
   return String(value ?? "")
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
@@ -116,7 +79,8 @@ export function usableName(raw: unknown, replies?: unknown) {
   const count = typeof replies === "string" && /^\d+$/.test(replies) ? Number(replies) : replies;
   return typeof count === "number" && Number.isSafeInteger(count) && count > 150;
 }
-export function cleanReplies(data: any) {
+function replyPage(data: any) {
+  const filtered = new Set<string>();
   const seen = new Set<string>();
   const out: NonNullable<Observation["comments"]> = [];
   function visit(row: any) {
@@ -124,7 +88,8 @@ export function cleanReplies(data: any) {
     const id = String(row.rpid_str ?? row.rpid ?? "");
     if (!id) return;
     // rcount is the count shown in Bilibili's “共…条回复”. Older rows may provide only count.
-    if (!seen.has(id) && usableName(row.member?.uname, row.rcount ?? row.count)) {
+    if (!usableName(row.member?.uname, row.rcount ?? row.count)) filtered.add(id);
+    else if (!seen.has(id)) {
       const body = plain(row.content?.message, 350).replace(
         /^回复\s*@[^:：]{1,64}[:：]\s*/,
         "",
@@ -146,7 +111,10 @@ export function cleanReplies(data: any) {
     ...(data?.top_replies ?? []),
     ...(data?.replies ?? []),
   ].forEach(visit);
-  return out.slice(0, 50);
+  return {comments:out.slice(0,50), filteredCount:[...filtered].filter(id=>!seen.has(id)).length};
+}
+export function cleanReplies(data: any) {
+  return replyPage(data).comments;
 }
 async function read(
   url: URL,
@@ -158,24 +126,7 @@ async function read(
     signal: AbortSignal.timeout(12500),
     redirect: "manual",
   };
-  let r: Response;
-  if (url.origin === "https://www.animenewsnetwork.com") {
-    const original = url.origin;
-    // ANN redirects article links to the visitor's edition. Only follow ANN itself.
-    for (let i = 0; ; i++) {
-      r = net.annTransport
-        ? await net.annTransport.fetch(new Request(url, options))
-        : await (net.request ?? fetch)(url, options);
-      const location = r.headers.get("location");
-      if (![301, 302, 303, 307, 308].includes(r.status) || !location) break;
-      await r.body?.cancel();
-      url = new URL(location, url);
-      if (i >= 3 || url.origin !== original || url.username || url.password)
-        throw Error("invalid_ann_redirect");
-    }
-  } else {
-    r = await (net.request ?? fetch)(url, options);
-  }
+  const r = await (net.request ?? fetch)(url, options);
   if (!r.ok) {
     throw Error(
       r.status === 412 || r.status === 429
@@ -324,7 +275,7 @@ async function readBiliList(q: ReadRequest, net: Network): Promise<Observation> 
 async function readBili(q: ReadRequest, net: Network): Promise<Observation> {
   if (isBiliAccountRead(q)) return readBiliList(q, net);
   const selectPart = q.action === "subtitles" || q.action === "frames" || q.action === "open";
-  const page = String(Math.max(1, Math.min(selectPart ? 10000 : 10, q.page ?? 1)));
+  const page = String(q.page ?? 1);
   if (q.action === "search" || q.action === "browse") {
     const search = q.action === "search";
     const data = search
@@ -343,14 +294,8 @@ async function readBili(q: ReadRequest, net: Network): Promise<Observation> {
           { ps: "8", fresh_idx: page, version: "1" },
           net,
         );
-    return {
-      level: "title",
-      status: "ok",
-      items: (data.result ?? data.item ?? [])
-        .filter((x: any) => /^BV\w{10}$/.test(x.bvid))
-        .slice(0, 8)
-        .map(biliItem),
-    };
+    const items:Story[]=(data.result ?? data.item ?? []).filter((x:any)=>videoId.test(x.bvid)).slice(0,8).map(biliItem);
+    return {level:"title",status:items.length?"ok":"no_results",items};
   }
   let bvid = q.id ?? "";
   if (/^ep[1-9]\d{0,15}$/.test(bvid)) {
@@ -386,9 +331,12 @@ async function readBili(q: ReadRequest, net: Network): Promise<Observation> {
       param,
       net,
     );
-    const comments = cleanReplies(data);
+    const {comments,filteredCount} = replyPage(data);
+    const total = data.page?.count, size = data.page?.size || 16;
+    const atEnd = Number.isInteger(total) ? Number(page)*size >= total : !data.replies?.length;
     return {
-      level: "filtered_comments",
+      level: "filtered_comments", filteredCount, atEnd,
+      nextPage: !atEnd && Number(page)<10000 ? Number(page)+1 : undefined,
       status: comments.length
         ? "ok"
         : data.replies == null
@@ -491,47 +439,37 @@ const heyShare = (id: string) =>
   encodeURIComponent(id);
 async function readHey(q: ReadRequest, net: Network): Promise<Observation> {
   if (q.action === "browse" || q.action === "search") {
-    const data = await hey(
-      "/bbs/app/feeds",
-      {
-        offset: String(((q.page ?? 1) - 1) * 10),
-        limit: "10",
-        pull: "0",
-        dw: "604",
-      },
-      net,
-    );
-    let items: Story[] = (data.links ?? []).flatMap((v: any) => {
-      try {
-        const id = new URL(v.share_url).searchParams.get("link_id");
-        return /^[\da-f]{1,32}$/i.test(id ?? "")
-          ? [
-              {
-                id,
-                title: plain(v.title, 120),
-                body: plain(v.description),
-                url: heyShare(id!),
-              },
-            ]
-          : [];
-      } catch {
-        return [];
+    const start=q.page??1, query=q.query?.trim().toLowerCase();
+    const last=Math.min(10000,start+(q.action==="search" && query ? 2 : 0));
+    let checked=0;
+    for(let page=start;page<=last;page++) {
+      const data=await hey("/bbs/app/feeds",{offset:String((page-1)*10),limit:"10",pull:"0",dw:"604"},net);
+      const links=Array.isArray(data.links)?data.links:[];
+      const items:Story[]=[];
+      for(const link of links) {
+        let id;
+        try { id=new URL(link.share_url).searchParams.get("link_id"); } catch { continue; }
+        if(!id || !/^[\da-f]{1,32}$/i.test(id)) continue;
+        checked++;
+        const title=plain(link.title,120),body=plain(link.description);
+        if(!query || (title+" "+body).toLowerCase().includes(query)) items.push({id,title,body,url:heyShare(id)});
       }
-    });
-    if (q.query)
-      items = items.filter((x) => (x.title + x.body).includes(q.query!));
-    return { level: "feed", status: "ok", items };
+      const atEnd=links.length<10 || data.has_more===false || page===10000;
+      if(items.length || atEnd || page===last) return {level:"feed",status:items.length?"ok":"no_results",items,atEnd,
+        nextPage:atEnd?undefined:page+1,coverage:"推荐流第 "+(page===start?start:start+"–"+page)+" 页，检查了 "+checked+" 条帖子"};
+    }
+    throw Error("invalid_page");
   }
   if (!/^[\da-f]{1,32}$/i.test(q.id ?? "")) throw Error("invalid_post");
   const d = await hey(
     "/bbs/app/link/tree",
     {
       link_id: q.id!,
-      page: "1",
-      is_first: "1",
+      page: String(q.page ?? 1),
+      is_first: (q.page ?? 1) === 1 ? "1" : "0",
       index: "1",
       owner_only: "0",
-      offset: "0",
+      offset: String(((q.page ?? 1)-1)*8),
       limit: "8",
       sort_filter: "hot",
     },
@@ -544,14 +482,14 @@ async function readHey(q: ReadRequest, net: Network): Promise<Observation> {
     const blocks = JSON.parse(link.text);
     if (Array.isArray(blocks))
       body =
-        plain(blocks.map((b: any) => b.text ?? "").join(" "), 2800);
+        plain(blocks.map((b: any) => b.text ?? "").join(" "), Number.MAX_SAFE_INTEGER);
   } catch {
-    body = plain(link.text, 2800) || body;
+    body = plain(link.text, Number.MAX_SAFE_INTEGER) || body;
   }
   const item = {
     id: q.id!,
     title: plain(link.title, 120),
-    body: body || plain(link.description, 1000),
+    body: body ? body.slice(q.offset ?? 0,(q.offset ?? 0)+2800) : plain(link.description, 1000),
     url: heyShare(q.id!),
   };
   const comments = (d.comments ?? [])
@@ -567,9 +505,10 @@ async function readHey(q: ReadRequest, net: Network): Promise<Observation> {
     .slice(0, 24);
   return {
     level: q.action === "comments" && comments.length ? "discussion" : q.action === "open" && body ? "article" : "metadata",
-    status: "ok",
+    status: q.action==="comments" && !comments.length ? "no_visible_comments" : body && q.action==="open" && (q.offset??0)>=body.length ? "end_of_article" : "ok",
     items: [item],
-    ...(q.action === "comments" ? { comments } : {}),
+    ...(q.action === "comments" ? {comments,atEnd:(d.comments?.length??0)<8,nextPage:(d.comments?.length??0)>=8 && (q.page??1)<10000?(q.page??1)+1:undefined} :
+      body ? {nextOffset:(q.offset??0)+item.body.length,atEnd:(q.offset??0)+item.body.length>=body.length} : {}),
   };
 }
 export function sharedLink(text: string): ReadRequest | undefined {
@@ -578,12 +517,12 @@ export function sharedLink(text: string): ReadRequest | undefined {
   try {
     const url = new URL(match[0]);
     if (url.username || url.password || url.port) return;
+    if (url.hostname==="b23.tv" && /^\/[a-zA-Z0-9]+\/?$/.test(url.pathname)) return {source:"bili",action:"open",id:url.origin+url.pathname};
     if (["www.bilibili.com", "m.bilibili.com"].includes(url.hostname)) {
-      const id = url.pathname.match(/BV[\da-zA-Z]{10}/)?.[0];
-      if (id) return { source: "bili", action: "open", id };
+      const id = url.pathname.match(/(?:BV[\da-zA-Z]{10}|ep[1-9]\d{0,15})(?:\/|$)/)?.[0]?.replace(/\/$/,"");
+      const page = Number(url.searchParams.get("p"));
+      if (id) return {source:"bili",action:"open",id,...(Number.isInteger(page) && page>0 && page<=10000 ? {page}: {})};
     }
-    if (["www.gcores.com", "www.animenewsnetwork.com"].includes(url.hostname))
-      return { source: "news", action: "open", id: url.href };
     if (
       [
         "api.xiaoheihe.cn",
@@ -607,115 +546,21 @@ export async function readMedia(
   net: Network = {},
 ): Promise<Observation> {
   try {
-    if (q.source === "museum" || q.source === "nasa") {
-      if (!["open","search","browse","image"].includes(q.action)) throw Error("unsupported_action");
-      return await collections[q.source]({...q,action:q.action==="image"?"open":q.action}, url=>read(url,net));
+    if (!q || !readingSources.includes(q.source)) throw Error("unsupported_source");
+    if (!readActions.includes(q.action) || (q.source==="heybox" && !["browse","search","open","comments"].includes(q.action))) throw Error("unsupported_action");
+    if (q.page!==undefined && (!Number.isInteger(q.page) || q.page<1 || q.page>10000)) throw Error("invalid_page");
+    if (q.source==="heybox") return await readHey(q,net);
+    if (typeof q.id==="string" && /^https:\/\/b23\.tv\/[a-zA-Z0-9]+\/?$/.test(q.id)) {
+      const redirect=await (net.request??fetch)(q.id,{redirect:"manual",signal:AbortSignal.timeout(6000)});
+      await redirect.body?.cancel();
+      const location=redirect.headers.get("location");
+      const resolved=location && sharedLink(new URL(location,q.id).href);
+      if (redirect.status<300 || redirect.status>=400 || !resolved || resolved.source!=="bili" || !/^(BV|ep)/.test(resolved.id??"")) throw Error("invalid_video_link");
+      q={...q,id:resolved.id,page:q.page??resolved.page};
+      const observation=await readBili(q,net);
+      return {...observation,resolved:{id:resolved.id!,page:q.page}};
     }
-    if (q.action==="image") throw Error("unsupported_action");
-    if (q.source !== "bili" && !["browse","open","search",...(q.source === "heybox"?["comments"]:[])].includes(q.action)) throw Error("unsupported_action");
-    if (q.source === "bili") return await readBili(q, net);
-    if (q.source === "heybox") return await readHey(q, net);
-    if (q.action === "open" && q.id && /^https:\/\//.test(q.id)) {
-      const url = new URL(q.id);
-      if (
-        url.username ||
-        url.password ||
-        url.port ||
-        !["www.gcores.com", "www.animenewsnetwork.com"].includes(url.hostname)
-      )
-        throw Error("unsupported_article");
-      if (url.hostname === "www.gcores.com") {
-        const id = url.pathname.match(
-          /^\/(?:articles|radios|videos)\/(\d+)\/?$/,
-        )?.[1];
-        if (!id) throw Error("unsupported_article");
-        const full = JSON.parse(
-          await read(
-            new URL(
-              "/gapi/v1" + url.pathname.replace(/\/$/, ""),
-              "https://www.gcores.com",
-            ),
-            net,
-          ),
-        ).data?.attributes;
-        if (!full) throw Error("unavailable");
-        let blocks = "";
-        try {
-          blocks = JSON.parse(full.content)
-            .blocks.map((b: any) => plain(b.text, 600))
-            .join("\n");
-        } catch {
-          blocks = plain(full.content, 4200);
-        }
-        return {
-          level: blocks ? "article" : "metadata",
-          status: "ok",
-          items: [
-            {
-              id: url.href,
-              title: plain(full.title, 140),
-              url: url.href,
-              body: (blocks || plain(full.desc, 600)).slice(0, 4200),
-            },
-          ],
-        };
-      }
-      if (!annArticle.test(url.pathname))
-        throw Error("unsupported_article");
-      const html = await read(url, net),
-        title = plain(
-          html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "",
-          140,
-        );
-      const article =
-        html.match(
-          /<div\b[^>]*class=["'][^"']*meat[^"']*["'][^>]*>([\s\S]*?)(?:<div\b[^>]*class=["'][^"']*(?:discuss|forum|comments|social|footer)|<\/article>)/i,
-        )?.[1] ??
-        html.match(/<article\b[^>]*>([\s\S]*?)<\/article>/i)?.[1] ??
-        "";
-      const body = plain(article, 4100);
-      return {
-        level: body ? "article" : "title",
-        status: "ok",
-        items: [{ id: url.href, url: url.href, title, body }],
-      };
-    }
-    if (q.action === "search" && q.query?.trim() && net.newsSearchKey) {
-      // Only pass article headlines and validated source links to the resident.
-      // An actual 'open' continues through each publisher's normal reader.
-      const items = await searchNews(q, net).catch(() => []);
-      if (items.length) return { level: "search_titles", status: "ok", items };
-    }
-    const feed = q.id === "ann" ? "ann" : "gcores";
-    const xml = await read(new URL(feeds[feed]), net);
-    const dom = new DOMParser({ errorHandler: () => {} }).parseFromString(
-      xml,
-      "application/xml",
-    );
-    const nodes = Array.from(dom.getElementsByTagName("item")).slice(0, 12);
-    let items: Story[] = nodes.flatMap((n) => {
-      const field = (tag: string) =>
-        n.getElementsByTagName(tag)[0]?.textContent ?? "";
-      const url = field("link").trim();
-      if (
-        !/^https:\/\/(www\.)?(gcores\.com|animenewsnetwork\.com)\//i.test(url)
-      )
-        return [];
-      return [
-        {
-          id: url,
-          title: plain(field("title"), 140),
-          url,
-          body: plain(field("description"), 1000),
-        },
-      ];
-    });
-    if (!items.length) throw Error("empty_feed");
-    if (q.action === "search" && q.query)
-      items = items.filter((item) =>
-        (item.title + item.body).toLowerCase().includes(q.query!.toLowerCase()),
-      );
-    return { level: "rss_excerpt", status: "ok", items: items.slice(0, 8) };
+    return await readBili(q,net);
   } catch (e) {
     const message = e instanceof Error ? e.message : "unavailable";
     return {

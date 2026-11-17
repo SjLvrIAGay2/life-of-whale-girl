@@ -22,18 +22,12 @@ function prepare(sql, args = []) {
 const imageProxy = process.env.WHALE_OPENAI_PROXY
   ? new ProxyAgent(process.env.WHALE_OPENAI_PROXY)
   : undefined;
-const annProxy = process.env.WHALE_ANN_PROXY
-  ? new ProxyAgent(process.env.WHALE_ANN_PROXY)
-  : undefined;
 export const env = {
   ...process.env,
   WHALE_QQ_VOICE: qqVoiceCodec,
   WHALE_MEMORY_EMBED: localEmbedding(file),
   WHALE_IMAGE_TRANSPORT: imageProxy && {
     fetch: (request) => fetch(request, { dispatcher: imageProxy }),
-  },
-  WHALE_ANN_TRANSPORT: annProxy && {
-    fetch: (request) => fetch(request, { dispatcher: annProxy }),
   },
   DB: {
     prepare,

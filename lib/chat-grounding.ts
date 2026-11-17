@@ -9,6 +9,7 @@ export function groundFriendReply(turn:ChatFacts,result:any) {
   const question=turn.unread?.at(-1)?.text?.trim();
   if(turn.intent!=="接话" || !question) return result;
   const reply=(message:string,reason:string)=>({decision:"send",messages:[message],grounding:reason,
+    profile:result?.profile,visualNotes:result?.visualNotes,shared:result?.shared,feeling:result?.feeling,closeTopics:result?.closeTopics,
     ...(result?.sleepAction===undefined?{}:{sleepAction:result.sleepAction})});
   const answer=(Array.isArray(result?.messages)?result.messages:[result?.text]).filter((s:unknown)=>typeof s==="string").join(" ");
   if(/画好|画完|成图|画.{0,7}进度|画到哪/.test(question)) {

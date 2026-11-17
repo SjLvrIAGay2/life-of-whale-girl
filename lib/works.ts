@@ -6,16 +6,18 @@ const short=(v:unknown,n:number)=>typeof v==="string"?v.trim().slice(0,n):"";
 // A reading attached to a work refers back to the activity, so changing its visibility also retracts that step.
 export const visibleWorkSteps = `(SELECT s.rowid AS position,s.* FROM work_steps s
   WHERE s.url IS NULL OR s.url NOT LIKE '/activity/%' OR EXISTS
-    (SELECT 1 FROM activities a, resident r WHERE r.id='whale' AND a.id=substr(s.url,11)
-      AND a.visibility='detail' AND COALESCE(json_extract(r.state,'$.sharing'),'detail')='detail'))`;
-export function attachReading(work: string, activity: string, now: number, next?: string) {
-  return [
-    stmt(`INSERT OR IGNORE INTO work_steps(id,work,made,body,url,level)
-      SELECT ?,id,?,'留下了这次阅读进度。',?,'reading' FROM works WHERE id=? AND scope='public' AND state='active'`,
-      "reading-"+activity, now, "/activity/"+activity, work),
-    stmt("UPDATE works SET updated=?,next=COALESCE(?,next) WHERE id=? AND scope='public' AND state='active'",
-      now, typeof next==="string"?short(next,240):null, work),
-  ];
+    (SELECT 1 FROM activities a JOIN works w ON w.id=s.work JOIN resident r ON r.id='whale'
+      WHERE a.id=substr(s.url,11) AND (w.scope='self' OR
+        (w.scope='public' AND a.visibility='detail' AND COALESCE(json_extract(r.state,'$.sharing'),'detail')='detail'))))`;
+export async function attachReading(work: string, activity: string, scope:string, now: number, next?: string) {
+  const target=await one<Work>("SELECT * FROM works WHERE id=? AND scope IN ('self','public') AND state='active'",work);
+  if (!target) return {attached:false,reason:"找不到这件进行中的作品。",writes:[]};
+  if (target.scope==="public" && scope!=="public") return {attached:false,reason:"这次私人阅读只能归入私人作品。",writes:[]};
+  return {attached:true,writes:[
+    stmt("INSERT OR IGNORE INTO work_steps(id,work,made,body,url,level) VALUES(?,?,?,'留下了这次阅读进度。',?,'reading')",
+      "reading-"+activity,work,now,"/activity/"+activity),
+    stmt("UPDATE works SET updated=?,next=COALESCE(?,next) WHERE id=?",now,typeof next==="string"?short(next,240):null,work),
+  ]};
 }
 export async function workList(scope:string, limit=8, offset=0) {
   const rows=await all<Work>("SELECT * FROM works WHERE scope=? AND state<>'hidden' ORDER BY state='active' DESC,updated DESC,id LIMIT ? OFFSET ?",scope,limit,offset);

@@ -184,6 +184,7 @@ export function StudioPanel({
               生成 QQ 配对口令
             </Button>
             {pair && <Text>QQ 发送「配对 {pair}」，十分钟内有效。</Text>}
+            <Text>配对后可发送「帮助」。睡着时，以 * 开头的动作（如「*轻轻敲门」）也能让她察觉。</Text>
           </Flex>
         </Stack>
       )}

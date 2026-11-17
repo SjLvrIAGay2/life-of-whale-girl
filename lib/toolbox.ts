@@ -4,7 +4,7 @@ export const toolName = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,39}$/);
 export const step = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("read"),
-    source: z.enum(["news", "heybox", "bili"]),
+    source: z.enum(["heybox", "bili"]),
     query: z.string().max(70).optional(),
   }),
   z.object({ op: z.literal("take"), count: z.number().int().min(1).max(8) }),
@@ -22,7 +22,7 @@ export const recipe = z.object({
 export type Recipe = z.infer<typeof recipe>;
 type Parts = {
   read: (
-    source: "news" | "bili" | "heybox",
+    source: "bili" | "heybox",
     query?: string,
   ) => Promise<string[]>;
   draw: (idea: string) => Promise<string>;

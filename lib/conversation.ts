@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { all, one, stmt, type ChatLine } from "../db";
 import { channelPreference, contactAllowed, contactPreferences } from "./contact-preferences";
 
@@ -104,7 +105,7 @@ export function nextFriendPromise(now=Date.now()) {
     ORDER BY MAX(m.due,COALESCE(CAST(c.value AS INTEGER),0)),m.made,m.id LIMIT 1`,now);
 }
 
-export type ChatContact = { identity: string; peer: string; owner: boolean; followUp: boolean; lastIn: number | null };
+export type ChatContact = { alias:string; identity: string; peer: string; owner: boolean; followUp: boolean; lastIn: number | null };
 export async function chatContacts(now: number, reminderFor?: string): Promise<ChatContact[]> {
   // Several existing QQ bindings can share one friend and one set of contact limits.
   const rows = await all<{ identity: string; peer: string; owner: number; followUp: number; lastIn: number | null }>(
@@ -135,7 +136,7 @@ export async function chatContacts(now: number, reminderFor?: string): Promise<C
   for (const row of rows) {
     const prefs = await contactPreferences(row.identity,now);
     if (channelPreference(prefs,!!reminderFor) !== "web" && contactAllowed(prefs,now,!!reminderFor))
-      contacts.push({...row,owner:!!row.owner,followUp:!!row.followUp});
+      contacts.push({...row,alias:"好友-"+createHash("sha256").update(row.identity).digest("hex").slice(0,10),owner:!!row.owner,followUp:!!row.followUp});
     if (contacts.length===12) break;
   }
   return contacts;

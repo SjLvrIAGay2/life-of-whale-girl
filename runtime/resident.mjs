@@ -12,6 +12,7 @@ import { all, one, stmt, house, publicHome, tickLock, unlock, commit, ModelBudge
 import { safeOrigin, same } from "../lib/security";
 import { activityArchive,legacyReading } from "../lib/activities";
 import { visibleWorkSteps } from "../lib/works";
+import { nextPersonalPlan } from "../lib/personal-plans";
 import { processPainting, tick } from "../lib/life";
 import { upgradeExperience } from "../lib/experience-migration";
 import { nextBell } from "../lib/sleep";
@@ -343,7 +344,8 @@ async function loop() {
     const outcome = await selfTurn(),
       now = Date.now(),
       { state } = await house();
-    const next = state.mode === "asleep" ? state.wakeAt : state.nextAt;
+    const planDue=state.mode==="awake" && !(state.budgetRetryAt>now) ? await nextPersonalPlan() : Infinity;
+    const next = state.mode === "asleep" ? state.wakeAt : Math.min(state.nextAt,planDue);
     const inbox = await nextInbox(undefined,state.mode==="asleep");
     const delivery = await nextQQDelivery();
     const sleepWork = state.mode==="asleep" && sqlite.prepare(`SELECT 1 WHERE EXISTS(SELECT 1 FROM messages WHERE reviewed=0 AND side='in' AND handled_at IS NOT NULL)

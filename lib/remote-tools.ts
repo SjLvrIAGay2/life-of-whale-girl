@@ -10,6 +10,24 @@ const grant = z.object({
   purpose: z.string().max(180),
   resultFields: z.array(z.string().trim().min(1).max(100)).max(20).default([]),
 });
+async function remoteDefinition(tool:z.infer<typeof grant>) {
+  const list=await rpc(tool.url,"tools/list",{},null);
+  const entry=list.result?.tools?.find((t:{name?:string})=>t.name===tool.name);
+  if(!entry) throw Error("服务器未提供这个工具");
+  const inputSchema=entry.inputSchema;
+  if(!inputSchema || typeof inputSchema!=="object" || Array.isArray(inputSchema))
+    return {inputSchema:null,notice:"服务端未声明参数，可以向站主核对用法。"};
+  return {inputSchema};
+}
+export async function describeInstalled(alias:string) {
+  const id="mcp/"+toolName.parse(alias);
+  const row=await one<{value:string}>("SELECT value FROM channel_state WHERE id=?",id);
+  if(!row || JSON.parse(row.value).paused) throw Error("工具未启用");
+  const tool=grant.parse(JSON.parse(row.value));
+  const definition=await remoteDefinition(tool);
+  await stmt("UPDATE channel_state SET value=? WHERE id=? AND value=?",JSON.stringify({...JSON.parse(row.value),...definition}),id,row.value).run();
+  return {name:alias,purpose:tool.purpose,...definition};
+}
 export async function registerRemote(value: unknown) {
   const rule = grant.parse(value);
   const u = new URL(rule.url);
@@ -23,13 +41,11 @@ export async function registerRemote(value: unknown) {
     /\.(local|internal|localhost|test)$/.test(u.hostname)
   )
     throw Error("请输入真实的 HTTPS MCP 地址");
-  const entry = await rpc(rule.url, "tools/list", {}, null);
-  if (!entry.result?.tools?.some((t: any) => t.name === rule.name))
-    throw Error("服务器未提供这个工具");
+  const definition=await remoteDefinition(rule);
   await stmt(
     "INSERT INTO channel_state VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
     "mcp/" + rule.alias,
-    JSON.stringify(rule),
+    JSON.stringify({...rule,...definition}),
   ).run();
 }
 export async function manageRemote(alias:string,action:"test"|"revoke"|"pause"|"resume"|"run",args?:unknown) {

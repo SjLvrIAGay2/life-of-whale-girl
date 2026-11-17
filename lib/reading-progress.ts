@@ -9,10 +9,10 @@ const target = "coalesce(json_extract(detail,'$.readingTarget'),json_extract(det
 const focused = `json_extract(detail,'$.detail.kind')='reading' AND
   json_extract(detail,'$.detail.action') IN ('open','subtitles','frames','comments','image')`;
 
-type Target = { source: Reading["source"]; id: string };
+type Target = { source: ReadRequest["source"]; id: string };
 type Stage = {
   action:string; page?:number; root?:string; attempts:number;
-  lastAttempt:{at:number; status:string; result:string; offset?:number};
+  lastAttempt:{at:number; status:string; result:string; offset?:number; nextPage?:number; atEnd?:boolean};
   lastRead?:{at:number; level:string; change:string; timesWithSameContent:number; position?:ReturnType<typeof position>; excerpt?:string};
 };
 
@@ -26,6 +26,7 @@ type Visit = {
 };
 
 function position(read: Reading) {
+  if (read.level==="article") return {fromOffset:read.offset??0,nextOffset:read.nextOffset,atEnd:read.atEnd};
   if (read.level === "subtitles") {
     const times = [...(read.items[0]?.body ?? "").matchAll(/^(\d+)s /gm)];
     // The old reader cut the last line at 3400 characters. Keep that line available on resumption.
@@ -48,12 +49,14 @@ function readingPaths(item:Target, stages:Stage[], part:number):ReadRequest[] {
       actions.push({...item,action,page:part,offset:pos?.nextOffset??0});
     }
   }
-  if(item.source==="bili" || item.source==="heybox") {
-    const last=stages.find(s=>s.action==="comments" && !s.root);
-    if(!last || last.lastAttempt.status==="ok" && item.source==="bili" && (last.page??1)<10000)
-      actions.push({...item,action:"comments",page:last?(last.page??1)+1:1});
+  const discussion=stages.find(s=>s.action==="comments" && !s.root);
+  if (!discussion) actions.push({...item,action:"comments",page:1});
+  else {
+    const next=discussion.lastAttempt.nextPage ?? (discussion.lastAttempt.status==="ok" && discussion.lastAttempt.atEnd!==true ? (discussion.page??1)+1 : undefined);
+    if(next && next<=10000) actions.push({...item,action:"comments",page:next});
   }
-  if(["museum","nasa"].includes(item.source) && !stages.some(s=>s.action==="image")) actions.push({...item,action:"image"});
+  const article=stages.find(s=>s.action==="open")?.lastRead?.position;
+  if (item.source==="heybox" && article?.nextOffset && !article.atEnd) actions.push({...item,action:"open",offset:article.nextOffset});
   return actions;
 }
 
@@ -81,7 +84,7 @@ async function materialProgress(item: Target, part?:number) {
     title ||= read.items[0]?.title;
     const key = JSON.stringify([read.action,read.page??1,read.root??""]);
     if (row.newest===1) stages.set(key,{action:read.action,page:read.page,root:read.root,attempts:row.attempts,
-      lastAttempt:{at:row.made,status:read.status??"ok",result:readingOutcome(read),offset:read.offset}});
+      lastAttempt:{at:row.made,status:read.status??"ok",result:readingOutcome(read),offset:read.offset,nextPage:read.nextPage,atEnd:read.atEnd}});
     const stage = stages.get(key);
     if (stage && (!read.status || read.status==="ok")) {
       const body=read.items[0]?.body;
@@ -97,8 +100,8 @@ async function materialProgress(item: Target, part?:number) {
 
 export async function personalReading(question?:{source?:Target["source"];id?:string;page?:number}) {
   const targets = await all<Target>(`SELECT ${source} AS source,${target} AS id FROM activities
-    WHERE ${focused} AND ${target} IS NOT NULL GROUP BY ${source},${target} ORDER BY max(rowid) DESC LIMIT 4`);
-  if (question?.source && question.id) {
+    WHERE ${focused} AND ${source} IN ('bili','heybox') AND ${target} IS NOT NULL GROUP BY ${source},${target} ORDER BY max(rowid) DESC LIMIT 4`);
+  if ((question?.source==="bili" || question?.source==="heybox") && question.id) {
     const focus={source:question.source,id:question.id};
     const rest=targets.filter(t=>t.source!==focus.source || t.id!==focus.id);
     return Promise.all([materialProgress(focus,question.page),...rest.slice(0,3).map(t=>materialProgress(t))]);

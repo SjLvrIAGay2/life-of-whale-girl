@@ -61,6 +61,11 @@ export type State = {
   sharing?: import("./activity").Visibility;
   currentActivity?: string;
   lastAction?: ActionReceipt | null;
+  lastActionScope?: string;
+  attentionScope?: string;
+  attentionActivity?: string;
+  quickSteps?: number;
+  budgetRetryAt?: number;
   lastResult?: unknown;
   journalHabit?: { everyDays:number; nextDay:string };
 };

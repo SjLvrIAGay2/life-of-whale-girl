@@ -171,6 +171,7 @@ function qqReferences(event: QQIncoming) {
   return { index: field("msg_idx=") || null, quotedRef: element?.msg_idx || ref || null, quotedText };
 }
 
+const qqHelp="可以和我聊天、发图片或语音，也可以请我读哔哩哔哩或小黑盒、设小屋闹钟。我睡着时普通留言会留到醒后，以 * 开头的互动（例如「*轻轻敲了敲门」）我当时就可能察觉。发送「帮助」可再看这段说明。";
 export async function acceptQQ(x: any) {
   if(x.op===0 && x.t==="C2C_MESSAGE_RECALL") {
     const user=x.d?.author?.user_openid??x.d?.user_openid;
@@ -210,7 +211,14 @@ export async function acceptQQ(x: any) {
         if (pair) {
           const p = JSON.parse(pair.value);
           if ((!p.target || p.target === "paired") && p.until > Date.now()) {
+            const at=Date.now();
             await db().batch([
+              stmt(`INSERT OR IGNORE INTO messages(id,peer,made,side,body,handled_at,reviewed)
+                SELECT ?,?,?,'in','QQ 配对',?,1 WHERE EXISTS(SELECT 1 FROM channel_state WHERE id=? AND value=?)`,
+                "qq:"+id,peer,at,at,pairKey,pair.value),
+              stmt(`INSERT OR IGNORE INTO messages(id,peer,made,side,body,reply_to,batch_id)
+                SELECT ?,?,?,'out',?,?,? WHERE EXISTS(SELECT 1 FROM channel_state WHERE id=? AND value=?)`,
+                "pair-help-"+id,peer,at,qqHelp,"qq:"+id,"pair-help-"+id,pairKey,pair.value),
               stmt(
                 "INSERT OR IGNORE INTO channel_state SELECT ?,'paired' WHERE EXISTS(SELECT 1 FROM channel_state WHERE id=? AND value=?)",
                 "friend/" + peer, pairKey, pair.value,
@@ -221,6 +229,7 @@ export async function acceptQQ(x: any) {
                 pair.value,
               ),
             ]);
+            if(env.WHALE_SELF_HOSTED!=="1") waitUntil(deliverQQ());
           }
         }
       } else if (
@@ -241,6 +250,16 @@ export async function acceptQQ(x: any) {
         const current=await qqImages(attachments);
         const quoted=quotedText?await qqImages(x.d.msg_elements?.[0]?.attachments,maxImages-current.length):[];
         const [added]=await db().batch([insert,...imageWrites("qq:"+id,current,false,true),...imageWrites("qq:"+id,quoted,true,true),...receipts]);
+        if(added.meta.changes && !voice && /^(?:QQ\s*)?(?:帮助|互动说明|使用说明)$/i.test(body.trim())) {
+          await db().batch([
+            stmt("UPDATE messages SET handled_at=?,reviewed=1 WHERE id=? AND withheld=0",receivedAt,"qq:"+id),
+            stmt(`INSERT OR IGNORE INTO messages(id,peer,made,side,body,reply_to,batch_id)
+              SELECT ?,?,?,'out',?,?,? WHERE EXISTS(SELECT 1 FROM messages WHERE id=? AND withheld=0)`,
+              "help-"+id,peer,receivedAt,qqHelp,"qq:"+id,"help-"+id,"qq:"+id),
+          ]);
+          if(env.WHALE_SELF_HOSTED!=="1") waitUntil(deliverQQ());
+          return;
+        }
         const correction=!voice && body.match(/^(记错人了|以后别再提|现在变了)[：:\s]*(.*)$/);
         if(added.meta.changes && quotedRef && correction && (correction[1]!=="现在变了" || correction[2].trim())) {
           const original=await one<{id:string}>("SELECT id FROM messages WHERE peer=? AND (qq_index=? OR id='qq:'||?) AND id<>? LIMIT 1",peer,quotedRef,quotedRef,"qq:"+id);

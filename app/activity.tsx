@@ -120,6 +120,8 @@ export function ActivityDetail({ item }: { item: PublicActivity }) {
               ? "　·　第 " + (e.offset + 1) + (e.nextOffset && e.nextOffset > e.offset + 1 ? "–" + e.nextOffset : "") + (e.level === "subtitles" ? " 句" : " 张") + (e.atEnd ? "（末尾）" : "")
               : ""}
           </Text>
+          {e.coverage && <Text size="sm" tone="secondary">{e.coverage}</Text>}
+          {e.filteredCount !== undefined && <Text size="sm" tone="secondary">本页按昵称及回复数过滤了 {e.filteredCount} 条评论。</Text>}
           {e.action === "archive" && (
             <Text size="sm" tone="secondary">
               旧站留下的阅读书签

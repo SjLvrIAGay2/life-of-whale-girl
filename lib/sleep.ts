@@ -176,7 +176,7 @@ export function setAlarm(state: State, command: AlarmCommand, now: number) {
   return "闹钟定在了上海时间 "+shanghaiDate(due).replace("T"," ")+"。";
 }
 
-export async function sleepContext(state: State, now: number) {
+export async function sleepContext(state: State, now: number, scope?: string) {
   const rows=await recentSleep(state,now,true);
   const last=rows.filter(r=>state.mode!=="asleep" || r.until<=state.sleepAt).at(-1);
   const slept=rows.reduce((sum,r)=>sum+Math.max(0,r.until-Math.max(now-day,r.made)),0);
@@ -184,8 +184,8 @@ export async function sleepContext(state: State, now: number) {
   const bell=state.lastBell;
   const interactions=state.sleepSession ? await all<{made:number;reaction:string}>(`SELECT made,json_extract(details,'$.sleepInteraction.choice') AS reaction
     FROM reply_turns WHERE status IN ('queued','silent') AND made<=?
-    AND json_extract(details,'$.sleepInteraction.sessionStarted')=? ORDER BY made DESC,rowid DESC LIMIT 4`,
-    now,state.sleepSession.started) : [];
+    AND json_extract(details,'$.sleepInteraction.sessionStarted')=? AND (? IS NULL OR scope=?) ORDER BY made DESC,rowid DESC LIMIT 4`,
+    now,state.sleepSession.started,scope??null,scope??null) : [];
   return {
     localTime:shanghaiDate(now), timezone:"Asia/Shanghai",mode:state.mode,
     feeling:pressure>1.12?"眼皮很沉":pressure>0.85?"有些犯困":pressure>0.55?"还算精神":"感觉休息得不错",

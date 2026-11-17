@@ -124,7 +124,7 @@ export async function reviewLegacyPromise(now:number) {
     due,when,JSON.stringify([...original]),p.id,p.scope)];
 }
 
-function numberCN(s:string) {
+export function numberCN(s:string) {
   if (/^\d+$/.test(s)) return Number(s);
   const digit=(x:string)=>"零一二三四五六七八九".indexOf(x.replace("两","二"));
   if (s.includes("十")) { const [a,b]=s.split("十"); return (a?digit(a):1)*10+(b?digit(b):0); }

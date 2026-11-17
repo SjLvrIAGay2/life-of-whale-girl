@@ -427,7 +427,7 @@ export async function editSite(raw: unknown, now: number, home: (site?: Site) =>
         testedRows: rows.length,
         registered: component.name,
         purpose: component.purpose,
-        example: { id: "my-widget", type: component.name, ...(q.bind ? { bind: q.bind } : {}) },
+        example: { id: "piece-" + crypto.randomUUID().slice(0, 12), type: component.name, ...(q.bind ? { bind: q.bind } : {}) },
       };
       break;
     }

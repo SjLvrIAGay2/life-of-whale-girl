@@ -6,10 +6,11 @@ import type { Observation, ReadRequest } from "./media";
 
 export type Outcome = Pick<ActionReceipt, "status" | "summary" | "ref"> & { result?: unknown };
 
-export function finishAction(state: State, action: string, made: number, outcome: Outcome) {
+export function finishAction(state: State, action: string, made: number, outcome: Outcome, scope = "self") {
   const { result, status, summary, ref } = outcome;
   state.lastAction = { action, made, status, summary, ref };
   state.lastResult = result;
+  state.lastActionScope = scope;
 }
 
 export function chatOutcome(status: string, batch?: string, incoming = false): Outcome {
@@ -24,13 +25,13 @@ export function readingBookmark(q: ReadRequest, observation: Observation, made?:
   const key = createHash("sha256").update(JSON.stringify([source, action, id, query, root, work])).digest("hex");
   return stmt("INSERT OR REPLACE INTO channel_state VALUES(?,?)", "reading-progress/" + key, JSON.stringify({
     source, action, id, query, root, page, offset, cursor, work, made,
-    level: observation.level, nextCursor: observation.nextCursor, nextPage: observation.nextPage,
+    level: observation.level, nextCursor: observation.nextCursor, nextPage: observation.nextPage, nextOffset:observation.nextOffset, atEnd:observation.atEnd, coverage:observation.coverage,
     items: observation.items.slice(0,5).map(item => ({id:item.id, title:item.title.slice(0,100), playback:item.playback})),
   }));
 }
 
 function oldReading(read: Reading): ReadRequest {
-  return {source:read.source, action:read.action as ReadRequest["action"], page:read.page, offset:read.offset, root:read.root,
+  return {source:read.source as ReadRequest["source"], action:read.action as ReadRequest["action"], page:read.page, offset:read.offset, root:read.root,
     id:["open","subtitles","comments","image","frames"].includes(read.action) ? read.items[0]?.id : undefined};
 }
 
@@ -87,7 +88,7 @@ export async function recoverLastAction(state: State) {
     ORDER BY a.made DESC,a.rowid DESC LIMIT 12`);
   for (const position of positions.reverse()) {
     const read: Reading = JSON.parse(position.detail).detail;
-    writes.push(readingBookmark(oldReading(read),{status:"ok",level:read.level,items:read.items},position.made,position.work??undefined));
+    if (read.source==="bili" || read.source==="heybox") writes.push(readingBookmark(oldReading(read),{status:"ok",level:read.level,items:read.items},position.made,position.work??undefined));
   }
   if (isOldObservation(legacy) && legacy.status === "ok") {
     if (legacy.level === "history" || legacy.level === "watch_later")
@@ -95,7 +96,7 @@ export async function recoverLastAction(state: State) {
     else if (legacy.id) {
       const row = await one<{made:number;detail:string}>("SELECT made,detail FROM activities WHERE id=?",legacy.id);
       const read = row && JSON.parse(row.detail).detail as Reading;
-      if (row && read?.kind === "reading") writes.push(readingBookmark(oldReading(read),legacy,row.made));
+      if (row && read?.kind === "reading" && (read.source==="bili" || read.source==="heybox")) writes.push(readingBookmark(oldReading(read),legacy,row.made));
     }
   }
   const last = await one<{made:number;kind:string;id:string|null;incoming:number|null}>(`SELECT * FROM (
@@ -108,6 +109,7 @@ export async function recoverLastAction(state: State) {
     ) ORDER BY made DESC, CASE kind WHEN 'queued' THEN 3 WHEN 'silent' THEN 3 WHEN 'decision' THEN 2 WHEN 'wake' THEN 1 ELSE 0 END DESC LIMIT 1`);
   state.lastResult = undefined;
   state.lastAction = null;
+  state.lastActionScope = "self";
   if (!last) return writes;
   if (last.kind === "wake") finishAction(state,"wake",last.made,{status:"done",summary:"睡醒了。",ref:last.id!});
   else if (last.kind === "silent" || last.kind === "queued") finishAction(state,"chat",last.made,chatOutcome(last.kind==="silent"?"read":"queued",last.id!,!!last.incoming));

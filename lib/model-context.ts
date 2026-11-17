@@ -2,7 +2,7 @@
 type Json = null | boolean | number | string | Json[] | { [key:string]:Json };
 type Fields = { [key:string]:Json };
 const object = (v:Json|undefined): v is Fields => !!v && typeof v==="object" && !Array.isArray(v);
-const essential = ["lastAction","state","question","desk","sleep","time","room","availableFurniture","readingProgress","works","archive","dayPlans","self",
+const essential = ["lastAction","state","question","desk","sleep","time","room","availableFurniture","readingProgress","works","archive","duePlans","dayPlans","self",
   "unread","id","status","ref","work","nextCursor","nextPage"];
 
 // Used for unusually large tool documents as well as non-activity inputs. An array element

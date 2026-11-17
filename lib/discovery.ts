@@ -3,7 +3,7 @@ import { readMedia, type ReadRequest } from "./media";
 import { gameCatalog, gameKinds, type Game } from "./games";
 import { unreadTitles } from "./reading-progress";
 
-type Source = "news" | "museum";
+type Source = ReadRequest["source"];
 type Title = {id:string; title:string};
 type Feed = {checked:number; fetched:number; page:number; status:string; items:Title[]};
 const hour = 3600000;
@@ -14,14 +14,14 @@ async function displayTitles(source:Source, now:number) {
   const key="discovery/"+source;
   const saved=await one<{value:string}>("SELECT value FROM channel_state WHERE id=?",key);
   let feed:Feed=saved ? JSON.parse(saved.value) : {checked:0,fetched:0,page:0,status:"",items:[]};
-  const ttl=feed.status==="ok" ? (source==="news"?4:12)*hour : hour/3;
+  const ttl=feed.status==="ok" ? 4*hour : hour/3;
   if (!saved || now<feed.checked || now-feed.checked>=ttl) {
-    const page=source==="museum" && feed.status!=="no_results" ? feed.page+1 : 1;
+    const page=feed.page >= 10 || feed.status==="no_results" ? 1 : feed.page+1;
     const result=await readMedia({source,action:"browse",page},{
       request:(url,options)=>fetch(url,{...options,signal:AbortSignal.timeout(4500)}),
     });
     if(result.status==="ok") {
-      const items=result.items.filter(i=>i.title && (source!=="news" || /^https:\/\/www\.gcores\.com\/(articles|radios|videos)\/\d+\/?$/.test(i.id)));
+      const items=result.items.filter(i=>i.title && i.id);
       feed={checked:now,fetched:now,page,status:"ok",items:items.map(({id,title})=>({id,title}))};
     } else feed={...feed,checked:now,status:result.status};
     await stmt("INSERT OR REPLACE INTO channel_state(id,value) VALUES(?,?)",key,JSON.stringify(feed)).run();
@@ -32,7 +32,7 @@ async function displayTitles(source:Source, now:number) {
 }
 
 export async function discoveryDesk(now:number, saves:{id:string;kind:Game["kind"];result:string;paused:boolean}[]) {
-  const displays=await Promise.all([displayTitles("news",now),displayTitles("museum",now)]);
+  const displays=await Promise.all([displayTitles("bili",now),displayTitles("heybox",now)]);
   const games=gameKinds.map(game=>{
     const saved=saves.find(s=>s.kind===game && !s.result);
     return {title:gameCatalog[game].title,action:"play",play:{game,op:"start"},

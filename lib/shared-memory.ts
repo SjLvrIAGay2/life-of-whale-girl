@@ -1,6 +1,6 @@
 import { all, memory,one, stmt, type Memory } from "../db";
 import { dayOf } from "../content/initial";
-import { promiseDue, type SourceLine } from "./friend-memory";
+import { numberCN, promiseDue, type SourceLine } from "./friend-memory";
 
 const trim=(v:unknown,n:number)=>typeof v==="string"?v.trim().slice(0,n):"";
 export function nextAnniversary(month:number,day:number,now:number,includeToday=false) {
@@ -14,9 +14,9 @@ export function nextAnniversary(month:number,day:number,now:number,includeToday=
   return null;
 }
 export function anniversaryIn(text:string,now:number) {
-  const match=text.match(/(?<!\d)(?:\d{4}\s*(?:年|[-/])\s*)?(\d{1,2})\s*(?:月|[-/])\s*(\d{1,2})(?!\d)(?:日|号)?/);
+  const match=text.normalize("NFKC").match(/(?<![\d一二两三四五六七八九十])(?:\d{4}\s*(?:年|[-/])\s*)?([\d一二两三四五六七八九十]{1,3})\s*(?:月|[-/])\s*([\d一二两三四五六七八九十]{1,3})(?![\d一二两三四五六七八九十])(?:日|号)?/);
   if(!match) return null;
-  const month=Number(match[1]),day=Number(match[2]);
+  const month=numberCN(match[1]),day=numberCN(match[2]);
   const due=nextAnniversary(month,day,now-1,true);
   return due===null?null:{due,details:JSON.stringify({month,day})};
 }
@@ -46,8 +46,19 @@ export function sharedWrites(scope:string,raw:any,lines:SourceLine[],now:number,
     let due:number|null=null, details:string|null=null;
     const evidence=["chat-in-"+line.id];
     if(kind==="occasion") {
-      const anniversary=anniversaryIn(quote,now);
-      if(!anniversary || !/生日|纪念日|初次见面|第一次见面|初识/.test(quote)) continue;
+      const topic=/生日|纪念日|初次见面|第一次见面|初识/;
+      let anniversary=anniversaryIn(quote,now);
+      if(!anniversary || !topic.test(quote)) {
+        const index=lines.indexOf(line);
+        const adjacent=topic.test(quote)?lines[index+1]:lines[index-1];
+        if(!adjacent || adjacent.side!=="in") continue;
+        const dateText=topic.test(quote)?adjacent.body:quote;
+        const topicText=topic.test(quote)?quote:adjacent.body;
+        if(!topic.test(topicText) || !/^(?:是|在|就是)?[\d零一二两三四五六七八九十年月日号/\s.-]+[。！!～~呀哦啦]*$/.test(dateText.trim())) continue;
+        anniversary=anniversaryIn(dateText,now);
+        if(!anniversary) continue;
+        evidence.push("chat-in-"+adjacent.id);
+      }
       ({due,details}=anniversary);
     } else if(kind==="followup") {
       const when=trim(item.when,100);

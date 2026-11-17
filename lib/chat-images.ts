@@ -1,11 +1,11 @@
 import { all, stmt, type ChatLine } from "../db";
 import { downloadQQ, type QQAudio } from "./qq-voice";
 
-export const maxImageBytes=1024*1024;
+export const maxImageBytes=6*1024*1024;
 export const maxImages=4;
 export type ChatImage={mime:string;bytes:Uint8Array};
 export function imageBytes(bytes:Uint8Array):ChatImage {
-  if (!bytes.length || bytes.length>maxImageBytes) throw Error("每张图片最多 1 MiB");
+  if (!bytes.length || bytes.length>maxImageBytes) throw Error("每张图片最多 6 MiB");
   const b=Buffer.from(bytes);
   let mime="";
   if (b.length>=24 && b.toString("hex",0,8)==="89504e470d0a1a0a" && b.toString("ascii",12,16)==="IHDR") mime="image/png";
@@ -42,5 +42,10 @@ export async function turnImages(lines:ChatLine[]) {
       AND (q.qq_index=k.ref OR q.id='qq:'||k.ref) JOIN chat_images a ON a.message=q.id AND a.quoted=0
       WHERE NOT EXISTS(SELECT 1 FROM chat_images own WHERE own.message=k.id AND own.quoted=1)
   ) SELECT * FROM available ORDER BY n,quoted DESC,part LIMIT 6`,JSON.stringify(keys));
-  return rows.map(r=>({message:r.n,quoted:!!r.quoted,position:r.part+1,url:"data:"+r.mime+";base64,"+Buffer.from(r.bytes).toString("base64")}));
+  let remaining=12*1024*1024;
+  return rows.filter(r=>{
+    if(r.bytes.length>remaining) return false;
+    remaining-=r.bytes.length;
+    return true;
+  }).map(r=>({message:r.n,quoted:!!r.quoted,position:r.part+1,url:"data:"+r.mime+";base64,"+Buffer.from(r.bytes).toString("base64")}));
 }

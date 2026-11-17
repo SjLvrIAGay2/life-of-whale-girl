@@ -9,7 +9,6 @@ declare namespace Cloudflare {
     WHALE_DEEPSEEK_API_KEY?: string;
     WHALE_OPENAI_API_KEY?: string;
     WHALE_IMAGE_TRANSPORT?: { fetch(request: Request): Promise<Response> };
-    WHALE_ANN_TRANSPORT?: { fetch(request: Request): Promise<Response> };
     WHALE_QQ_VOICE?: {
       toWave(bytes: Uint8Array): Promise<Uint8Array>;
       toSilk(wave: Uint8Array): Promise<Uint8Array>;

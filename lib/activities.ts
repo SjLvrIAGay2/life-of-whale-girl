@@ -51,7 +51,7 @@ export function readExperience(q: ReadRequest, result: Observation): Reading | u
     action: q.action,
     level,
     status: result.status,
-    ...(result.nextOffset !== undefined ? {nextOffset:result.nextOffset,atEnd:result.atEnd} : {}),
+    nextOffset:result.nextOffset, nextPage:result.nextPage, atEnd:result.atEnd, filteredCount:result.filteredCount, coverage:result.coverage,
     items: result.items
       .slice(0, 8)
       .map(({ id, title, url, body, image }) => ({
@@ -71,7 +71,7 @@ export function readExperience(q: ReadRequest, result: Observation): Reading | u
         ...(image ? { image } : {}),
       })),
     ...(q.page || ["subtitles", "frames", "comments"].includes(q.action) ? { page: q.page ?? 1 } : {}),
-    ...(["subtitles", "frames"].includes(q.action) ? { offset: q.offset ?? 0 } : {}),
+    ...(["subtitles", "frames"].includes(q.action) || q.offset!==undefined ? { offset: q.offset ?? 0 } : {}),
     ...(q.root ? { root: q.root } : {}),
     ...(result.comments?.length ? { comments: result.comments.slice(0, 24) } : {}),
   };
@@ -120,7 +120,7 @@ export async function leisureContext(state: State) {
   const recent = await all<{ id: string; made: number; visibility: Visibility; kind: string }>(
     "SELECT id,made,visibility,json_extract(detail,'$.detail.kind') AS kind FROM activities ORDER BY made DESC,rowid DESC LIMIT 10",
   );
-  const bookmarks = await all<{value:string}>("SELECT value FROM channel_state WHERE id GLOB 'reading-progress/*' ORDER BY rowid DESC LIMIT 6");
+  const bookmarks = await all<{value:string}>("SELECT value FROM channel_state WHERE id GLOB 'reading-progress/*' AND json_extract(value,'$.source') IN ('bili','heybox') ORDER BY rowid DESC LIMIT 6");
   return {
     latest: state.lastAction ? accountContext(state.lastResult) : undefined,
     reading: bookmarks.map(row => accountContext(JSON.parse(row.value))),
@@ -262,7 +262,7 @@ export function legacyReading(
   });
   return {
     kind: "reading",
-    source: match[1] as ReadRequest["source"],
+    source: match[1] as Reading["source"],
     action: "archive",
     level,
     items: [
