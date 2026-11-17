@@ -1,0 +1,1 @@
+ALTER TABLE `messages` ADD `voice` integer DEFAULT 0 NOT NULL;

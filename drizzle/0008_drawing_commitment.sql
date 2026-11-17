@@ -1,0 +1,1 @@
+ALTER TABLE `art_jobs` ADD `promise_id` text;
