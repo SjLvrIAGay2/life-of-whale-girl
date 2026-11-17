@@ -27,14 +27,14 @@ export function interactionText(body:string) {
   const text=body.trim();
   return text.startsWith("*") ? text.slice(1).trim() : "";
 }
-export async function interactionWrite(id:string,body:string) {
-  if(!interactionText(body)) return;
+export async function messageReceiptWrites(id:string,body:string) {
   const state=await one<{mode:string;started:number|null}>(`SELECT json_extract(state,'$.mode') AS mode,
     json_extract(state,'$.sleepSession.started') AS started FROM resident WHERE id='whale'`);
   const received={receivedMode:state?.mode??"unknown",sleepStarted:state?.mode==="asleep"?state.started:null};
-  return stmt(`INSERT OR IGNORE INTO channel_state(id,value)
+  const keys=["message-receipt/"+id,...(interactionText(body)?["interaction/"+id]:[])];
+  return keys.map(key=>stmt(`INSERT OR IGNORE INTO channel_state(id,value)
     SELECT ?,? WHERE EXISTS(SELECT 1 FROM messages WHERE id=? AND side='in' AND withheld=0)`,
-    "interaction/"+id,JSON.stringify(received),id);
+    key,JSON.stringify(received),id));
 }
 export function inboxWhere(sleepOnly=false) {
   // The text fallback also accepts unread messages saved before interaction metadata existed.

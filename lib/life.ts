@@ -1145,7 +1145,7 @@ export async function respond(
   if(last && (await one<{n:number}>(activeInputs,inputIds))?.n!==inbox.length) return {status:"collecting"};
   const began=Date.now();
   const [chat, card, expressions, owner,prefs,images,sharedMemory,works,avoid,interactions] = await Promise.all([
-    chatContext(peers, inbox), friendCard(scope,t.now), chatExpressions(),
+    chatContext(peers, inbox,t.state,t.now), friendCard(scope,t.now), chatExpressions(),
     one<{ value: string }>("SELECT value FROM channel_state WHERE id='owner-peer'"),
     contactPreferences(identity,t.now),turnImages(inbox),sharedEntries(scope,t.now),workList(scope),avoidedTerms(scope),interactionContext(inbox),
   ]);
@@ -1197,6 +1197,7 @@ export async function respond(
       receivedAt: last ? shanghaiDate(last.made) : undefined,
       interactions:interactions.length?interactions:undefined,
       activity: interruptedActivity,
+      lastAction:mentionsAvoided(JSON.stringify(t.state.lastAction??null),avoid)?undefined:t.state.lastAction,
       attention: mentionsAvoided(t.state.attention,avoid)?undefined:t.state.attention || undefined,
       sharedLink: reading && { level: reading.level, status: reading.status,
         items: reading.items.filter(i=>!mentionsAvoided(i.title+" "+i.body,avoid)).slice(0, 1).map(item => ({ title: item.title, body: clip(item.body, 900), url: item.url })) },
@@ -1233,6 +1234,7 @@ export async function respond(
   }
   const info={intent:last?"reply":reminder?"reminder":"opener",channel:"QQ",grounding:response.grounding,
     persona:defs.find(v=>v.name==="persona")?.id??"initial",memories:context.map(m=>m.id),
+    history:{turns:chat.recent.length,messages:chat.recent.reduce((count,turn)=>count+turn.messages.length,0),from:chat.recent[0]?.time},
     incoming:inbox.length,inputs:inbox.map(l=>l.id),images:images.length,pause:last?t.now-last.made:null,sleepInteraction,
     contextMs:inferenceStart-began,modelMs:Date.now()-inferenceStart};
   if (response.decision === "silent" || mentionsAvoided(JSON.stringify([response.messages,response.text,response.draw,response.work]),avoid)) {

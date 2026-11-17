@@ -14,7 +14,7 @@ import { hearQQVoice, isQQVoice, type QQAudio } from "./qq-voice";
 import { synthesize } from "./speech";
 import { failureReason } from "./diagnostics";
 import { qqPromiseChanges } from "./friend-memory";
-import { nextInbox, identityFor, interactionWrite } from "./conversation";
+import { nextInbox, identityFor, messageReceiptWrites } from "./conversation";
 import { imageWrites, isQQImage, maxImages, qqImages } from "./chat-images";
 import { channelPreference, contactAllowed, contactPreferences, qqPreferences, setContactPreferences,voicePreference } from "./contact-preferences";
 import { correctConversation, withdrawMessage } from "./memory-control";
@@ -229,7 +229,7 @@ export async function acceptQQ(x: any) {
       ) {
         if (await one("SELECT id FROM messages WHERE id=?", "qq:" + id)) return;
         const receivedAt = Date.now();
-        const interaction=await interactionWrite("qq:"+id,body);
+        const receipts=await messageReceiptWrites("qq:"+id,body);
         if (voice) {
           const heard = await hearQQVoice(voice);
           body = heard ? [body, heard].filter(Boolean).join("\n").slice(0, 6000) : [body, "〔这条语音没有听清〕"].filter(Boolean).join("\n");
@@ -240,7 +240,7 @@ export async function acceptQQ(x: any) {
         );
         const current=await qqImages(attachments);
         const quoted=quotedText?await qqImages(x.d.msg_elements?.[0]?.attachments,maxImages-current.length):[];
-        const [added]=await db().batch([insert,...imageWrites("qq:"+id,current,false,true),...imageWrites("qq:"+id,quoted,true,true),...(interaction?[interaction]:[])]);
+        const [added]=await db().batch([insert,...imageWrites("qq:"+id,current,false,true),...imageWrites("qq:"+id,quoted,true,true),...receipts]);
         const correction=!voice && body.match(/^(记错人了|以后别再提|现在变了)[：:\s]*(.*)$/);
         if(added.meta.changes && quotedRef && correction && (correction[1]!=="现在变了" || correction[2].trim())) {
           const original=await one<{id:string}>("SELECT id FROM messages WHERE peer=? AND (qq_index=? OR id='qq:'||?) AND id<>? LIMIT 1",peer,quotedRef,quotedRef,"qq:"+id);

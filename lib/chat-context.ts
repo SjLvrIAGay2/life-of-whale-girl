@@ -1,4 +1,5 @@
 import { all, type ChatLine } from "../db";
+import type { State } from "../content/initial";
 import { communitySticker } from "./community-art";
 import { deliveredChatLine } from "./conversation";
 import { shanghaiDate } from "./friend-memory";
@@ -52,6 +53,7 @@ type ChatPart = {
   voice?: true;
   sticker?: string;
   quote?: Quotation;
+  timing?: {receivedAt:string;readAt:string;delayMinutes:number;receivedMode:string};
 };
 function chatPart(line: ChatLine, quotes: Map<string, Quotation>, limit: number): ChatPart {
   return {
@@ -69,11 +71,44 @@ function sameTurn(previous: ChatLine, line: ChatLine) {
   return line.handled_at === previous.handled_at;
 }
 
-export async function chatContext(peers: string[], inbox: ChatLine[]) {
+async function messageTimings(lines:ChatLine[],state:State,now:number) {
+  const incoming=lines.filter(line=>line.side==="in");
+  const timings=new Map<string,NonNullable<ChatPart["timing"]>>();
+  if(!incoming.length) return timings;
+  const [receipts,sleeps]=await Promise.all([
+    all<{id:string;value:string|null}>(`SELECT m.id,COALESCE(receipt.value,interaction.value) AS value
+      FROM messages m LEFT JOIN channel_state receipt ON receipt.id='message-receipt/'||m.id
+      LEFT JOIN channel_state interaction ON interaction.id='interaction/'||m.id
+      WHERE m.id IN (SELECT value FROM json_each(?))`,JSON.stringify(incoming.map(line=>line.id))),
+    // A completed interval is evidence even when the message predates the recent-sleep window.
+    all<{made:number;until:number}>(`SELECT made,until FROM activities WHERE made<=? AND until>? AND until<=?
+      AND json_extract(detail,'$.detail.kind')='sleep'`,
+      Math.max(...incoming.map(line=>line.made)),Math.min(...incoming.map(line=>line.made)),now),
+  ]);
+  if(state.sleepAt>0 && state.sleepAt<=now) {
+    const until=state.mode==="asleep"?now+1:state.wakeAt;
+    if(until>state.sleepAt && (state.mode==="asleep" || until<=now)) sleeps.push({made:state.sleepAt,until});
+  }
+  const modes=new Map(receipts.map(row=>[row.id,row.value?JSON.parse(row.value).receivedMode:"unknown"]));
+  for(const line of incoming) {
+    const readAt=line.handled_at??now;
+    const asleep=sleeps.some(sleep=>sleep.made<=line.made && line.made<sleep.until);
+    // The clock may commit a due natural wake just after the gateway saved its receipt.
+    const afterWake=state.mode==="awake" && state.wokeAt!==undefined && state.wokeAt<=line.made && line.made<=now;
+    timings.set(line.id,{
+      receivedAt:shanghaiDate(line.made),readAt:shanghaiDate(readAt),
+      delayMinutes:Math.floor(Math.max(0,readAt-line.made)/60000),
+      receivedMode:asleep?"asleep":afterWake?"awake":modes.get(line.id)??"unknown",
+    });
+  }
+  return timings;
+}
+
+export async function chatContext(peers: string[], inbox: ChatLine[],state:State,now:number) {
   const rows = await all<ChatLine>(
     `SELECT m.* FROM messages m WHERE m.withheld=0 AND m.peer IN (SELECT value FROM json_each(?))
      AND (m.side='out' OR m.handled_at IS NOT NULL) AND ${deliveredChatLine}
-     ORDER BY m.made DESC,m.rowid DESC LIMIT 129`, JSON.stringify(peers),
+     ORDER BY CASE WHEN m.side='in' THEN m.handled_at ELSE m.made END DESC,m.made DESC,m.rowid DESC LIMIT 129`, JSON.stringify(peers),
   );
   const rowsBeforeWindow = rows.length === 129 ? rows.pop() : undefined;
   const turns: ChatLine[][] = [];
@@ -84,14 +119,16 @@ export async function chatContext(peers: string[], inbox: ChatLine[]) {
   }
   if (rowsBeforeWindow && sameTurn(rowsBeforeWindow, turns[0][0])) turns.shift();
   const window = turns.slice(-16);
-  const quotes = await quotedMessages([...window.flat(), ...inbox]);
+  const lines=[...window.flat(),...inbox];
+  const [quotes,timings]=await Promise.all([quotedMessages(lines),messageTimings(lines,state,now)]);
+  const part=(line:ChatLine,limit:number)=>({...chatPart(line,quotes,limit),timing:timings.get(line.id)});
   const recent = window.map(turn => ({
     speaker: speaker(turn[0].side),
     channel: channel(turn[0].peer),
     time: shanghaiDate(turn[0].made),
-    messages: turn.map(line => chatPart(line, quotes, 640)),
+    messages: turn.map(line => part(line,640)),
   }));
-  const unread = inbox.map(line => chatPart(line, quotes, line.body.length));
+  const unread = inbox.map(line => part(line,line.body.length));
   const recentMemoryIds = window.flat().map(line => "chat-" + line.side + "-" + line.id);
   const recentSources=window.flat().filter(l=>l.body).slice(-12).map(l=>({id:"chat-"+l.side+"-"+l.id,body:l.body,side:l.side}));
   return { recent, unread, recentMemoryIds,recentSources };
@@ -117,8 +154,10 @@ export function fitChatPrompt(data: ChatPrompt & Record<string, unknown>): strin
   const limit = 24000;
   const optional=[data.references,data.stickers,data.episodeSources,data.art,data.sharedMemories,data.works,data.expressionGuide]
     .filter((items):items is unknown[]=>Array.isArray(items));
+  const lastIncoming=data.recent.findLastIndex(turn=>turn.speaker==="好友");
+  const keepRecent=lastIncoming<0?2:Math.max(2,data.recent.length-lastIncoming);
   for (const items of [data.context,...optional,data.recent, data.friendCard.facts, data.friendCard.promises]) {
-    const minimum = items === data.recent ? 2 : items === data.friendCard.promises ? 1 : 0;
+    const minimum = items === data.recent ? keepRecent : items === data.friendCard.promises ? 1 : 0;
     while (items.length > minimum && json.length > limit) {
       if (items === data.recent) items.shift();
       else items.pop();
