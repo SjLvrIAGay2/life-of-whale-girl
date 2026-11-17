@@ -51,6 +51,7 @@ export type State = {
   lastBell?: { id: string; at: number; heard: boolean };
   activity: string;
   room: RoomItem[];
+  cabinVersion?: 1;
   mood: string;
   feeling?: {label:string;cause:string;strength:number;since:number;until:number};
   interests: string[];
@@ -131,4 +132,5 @@ export type PublicHome = {
   more?:boolean;
   series?:{id:string;title:string}[];
   objects?:Awaited<ReturnType<typeof import("../lib/works").publicRoom>>;
+  cabin?:import("../lib/cabin-model").PublicItem[];
 };

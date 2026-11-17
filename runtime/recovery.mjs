@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 export function inventory(db) {
   const tables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(x=>x.name));
   const counts={};
-  for(const name of ["messages","memories","drawings","works","work_steps","chat_images","memory_rules","art_jobs","activities","play_saves","site_editions"])
+  for(const name of ["messages","memories","drawings","works","work_steps","chat_images","memory_rules","art_jobs","activities","play_saves","site_editions","cabin_items","cabin_types","cabin_requests","cabin_previews"])
     counts[name]=tables.has(name)?db.prepare("SELECT count(*) n FROM "+name).get().n:0;
   counts.friends=tables.has("channel_state")?db.prepare(`SELECT count(*) n FROM (
     SELECT CASE WHEN value LIKE 'web-%' THEN value ELSE substr(id,8) END AS identity FROM channel_state WHERE id LIKE 'friend/qq-%'

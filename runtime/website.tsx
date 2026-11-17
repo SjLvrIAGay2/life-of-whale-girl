@@ -11,7 +11,7 @@ async function start() {
   if (page === "journal" && id) q.set("day", id);
   const initial = await fetchPublicPage(q);
   document.title = initial.name;
-  createRoot(shell).render(<Home initial={initial} page={page} day={id} search={q.toString()} />);
+  createRoot(shell).render(<Home initial={initial} page={page} day={id} search={q.toString()} live />);
 }
 start().catch((e) => {
   shell.textContent = e.message;

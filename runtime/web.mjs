@@ -35,6 +35,8 @@ const ct = {
   ".svg": "image/svg+xml",
 };
 let cached;
+const listeners=new Set();
+const revisionEvent=revision=>"data: "+revision+"\n\n";
 function getHome(){
   if(!cached) {
     if (!existsSync(snapshot)) {
@@ -102,6 +104,15 @@ function savePicture(drawing) {
 createServer(async (req, res) => {
   try {
     const u = new URL(req.url, siteOrigin);
+    if(req.method==="GET" && u.pathname==="/api/v1/life/revisions") {
+      const revision=getHome().revision;
+      res.writeHead(200,{"Content-Type":"text/event-stream","Cache-Control":"no-store","X-Accel-Buffering":"no"});
+      res.write(revisionEvent(revision));
+      listeners.add(res);
+      const heartbeat=setInterval(()=>res.write(": heartbeat\n\n"),30000);
+      res.on("close",()=>{clearInterval(heartbeat);listeners.delete(res);});
+      return;
+    }
     if (u.pathname === "/internal/mirror" && req.method === "POST") {
       if (!mirrorPublic) return reply(res, 403, "text/plain", "Forbidden");
       const ts = req.headers["x-whale-timestamp"] ?? "",
@@ -198,6 +209,7 @@ createServer(async (req, res) => {
       renameSync(snapshot + ".tmp", snapshot);
       rmSync(staging,{force:true});
       cached=data.home;
+      for(const viewer of listeners) viewer.write(revisionEvent(cached.revision));
       return reply(res, 200, "application/json", '{"ok":true}');
     }
     if (u.pathname === "/api/v1/life/home" && req.method === "GET")

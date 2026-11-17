@@ -144,6 +144,40 @@ body {
   width: 100%;
   aspect-ratio: 16/9;
 }
+.cabin-inventory {
+  border-top: 1px solid var(--yuki-color-border);
+  margin-top: 9px;
+  padding: 7px 4px 0;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.room-canvas { position: relative; }
+.cabin-markers { position: absolute; inset: 0; pointer-events: none; }
+.cabin-markers button {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  max-width: 28%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid #8d9a85;
+  border-radius: 0.35em;
+  background: #fffaf0ef;
+  color: #34483f;
+  padding: 0.18em 0.45em;
+  font: inherit;
+  font-size: clamp(10px, 1vw, 13px);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.cabin-inventory summary { cursor: pointer; overflow-wrap: anywhere; }
+.cabin-inventory > summary span, .cabin-location, .cabin-measures { color: var(--yuki-color-text-secondary); font-size: 0.88em; }
+.cabin-inventory > summary span, .cabin-location { margin-inline-start: 0.65em; }
+.cabin-inventory ul { list-style: none; margin: 4px 0; padding-inline-start: 0.9em; border-inline-start: 1px solid var(--yuki-color-border); }
+.cabin-inventory li { padding-block: 2px; }
+.cabin-inventory p { margin: 2px 0 2px 1.1em; overflow-wrap: anywhere; }
+.cabin-measures { display: flex; flex-wrap: wrap; gap: 0 1em; }
+.cabin-swatch { display: inline-block; width: .65em; height: .65em; margin-inline-end: .4em; border-radius: 50%; background: #84a99b; border: 1px solid #657a7360; }
 .room-scene .furniture {
   position: absolute;
   transform: translate(-50%, -100%);

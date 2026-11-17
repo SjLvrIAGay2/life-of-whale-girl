@@ -1,0 +1,446 @@
+import { z } from "zod";
+import { createHash } from "node:crypto";
+import { one, saveVersion, stmt, type Setting } from "../db";
+import type { State } from "../content/initial";
+import type { Outcome } from "./action-result";
+import {
+  behaviorSchema,
+  capabilities,
+  data,
+  definition,
+  destination,
+  itemId,
+  key,
+  properties,
+  propertyPatch,
+  regionList,
+  visibility,
+  volume,
+  checkDimensions,
+  type Behavior,
+  type Item,
+} from "./cabin-model";
+import { describeBehavior, runBehavior, type ObjectHost } from "./cabin-behavior";
+import { Cabin, loadCabin, syncFurniture } from "./cabin-store";
+
+const opKey = { requestId: z.string().trim().min(1).max(128) };
+const target = { id: itemId };
+const action = { ...target, action: key };
+const catalog = z
+  .object({
+    op: z.literal("catalog"),
+    query: z.string().max(100).default(""),
+    type: key.optional(),
+    parent: itemId.optional(),
+    offset: z.number().int().nonnegative().default(0),
+  })
+  .strict();
+const operations = z.discriminatedUnion("op", [
+  catalog,
+  z.object({ op: z.literal("inspect"), ...target }).strict(),
+  z.object({ op: z.literal("type"), type: key }).strict(),
+  z
+    .object({
+      op: z.literal("help"),
+      command: z.string().optional(),
+      capability: z.enum(capabilities).optional(),
+    })
+    .strict(),
+  z.object({ op: z.literal("define"), ...opKey, type: key, definition }).strict(),
+  z
+    .object({ op: z.literal("defaults"), ...opKey, type: key, patch: z.record(z.string(), z.unknown()) })
+    .strict(),
+  z.object({ op: z.literal("create"), ...opKey, type: key, to: destination.optional() }).strict(),
+  z
+    .object({
+      op: z.literal("update"),
+      ...opKey,
+      ...target,
+      props: propertyPatch.optional(),
+      state: data.optional(),
+      regions: regionList.optional(),
+      refs: z.array(itemId).max(100).optional(),
+      visibility: visibility.optional(),
+    })
+    .strict(),
+  z.object({ op: z.literal("find"), ...target, to: destination }).strict(),
+  z.object({ op: z.literal("move"), ...opKey, ...target, to: destination }).strict(),
+  z.object({ op: z.literal("stow"), ...opKey, ...target }).strict(),
+  z.object({ op: z.literal("remove"), ...opKey, ...target }).strict(),
+  z
+    .object({
+      op: z.literal("consume"),
+      ...opKey,
+      parent: itemId,
+      region: key,
+      type: key,
+      count: z.number().int().min(1).max(256),
+    })
+    .strict(),
+  z.object({ op: z.literal("call"), ...opKey, ...action, args: z.unknown().optional() }).strict(),
+  z
+    .object({
+      op: z.literal("preview"),
+      ...opKey,
+      ...action,
+      behavior: behaviorSchema,
+      args: z.unknown().optional(),
+    })
+    .strict(),
+  z.object({ op: z.literal("activate"), ...opKey, ...action, preview: itemId }).strict(),
+  z.object({ op: z.literal("rollback"), ...opKey, ...action }).strict(),
+]);
+type Command = z.infer<typeof operations>;
+const commands = operations.options.map((o) => o.shape.op.value);
+const labels: Record<Command["op"], string> = {
+  help: "查看了操作参数",
+  catalog: "查看了对象目录",
+  type: "查看了类型定义",
+  inspect: "查看了物品",
+  define: "登记了新类型",
+  defaults: "更新了新实例的默认值",
+  create: "生成了物品",
+  update: "修改了物品",
+  find: "找到了可放的位置",
+  move: "移动了物品",
+  stow: "收起了整件物品和内容",
+  remove: "移除了物品",
+  consume: "吃掉了物品",
+  call: "调用了对象动作",
+  preview: "在副本上试跑成功",
+  activate: "启用了试跑过的动作",
+  rollback: "恢复了上一个动作版本",
+};
+const help = {
+  commands,
+  capabilities,
+  units:
+    "size 为 [宽,深,高] cm，质量 g，软件容量 MB。区域坐标属于父对象，旋转单位为度。写操作使用唯一 requestId，重试原样发送。",
+  extension:
+    "preview 在指定实例副本上试跑，activate 用返回的 preview 编号启用，rollback 回到上一版。配方沿用 read/take/join/caption/draw，增加 state.get、state.append 和 replay。",
+};
+function manual(cmd: Extract<Command, { op: "help" }>) {
+  if (cmd.capability) return describeBehavior({ capability: cmd.capability });
+  if (!cmd.command) return help;
+  const schema = operations.options.find((o) => o.shape.op.value === cmd.command);
+  if (!schema) throw Error("找不到操作 " + cmd.command);
+  return z.toJSONSchema(schema, { io: "input", unrepresentable: "any" });
+}
+
+function catalogPage(cabin: Cabin, cmd: z.infer<typeof catalog>) {
+  const matches = (value: string) => value.toLowerCase().includes(cmd.query.toLowerCase());
+  const matchesQuery = [...cabin.items.values()].filter(
+    (i) =>
+      cabin.usable(i) &&
+      cabin.reachable(i) &&
+      (!cmd.type || i.type === cmd.type) &&
+      (!cmd.parent || i.at?.parent === cmd.parent) &&
+      (matches(i.id) || matches(i.props.name) || matches(i.type)),
+  );
+  const placed: Item[] = [],
+    stored: Item[] = [];
+  for (const i of matchesQuery) (cabin.path(i).at(-1)?.id === "cabin" ? placed : stored).push(i);
+  const items = [...placed, ...stored];
+  const types = [...cabin.types].filter(
+    ([id, d]) => (!cmd.type || id === cmd.type) && (matches(id) || matches(d.name)),
+  );
+  const end = cmd.offset + 24;
+  return {
+    types: types.slice(cmd.offset, end).map(([type, d]) => ({ type, name: d.name })),
+    items: items
+      .slice(cmd.offset, end)
+      .map((i) => ({ id: i.id, type: i.type, name: i.props.name, at: i.at })),
+    total: items.length,
+    nextOffset: Math.max(types.length, items.length) > end ? end : undefined,
+  };
+}
+function inspect(cabin: Cabin, item: Item) {
+  const children = cabin.children(item.id).filter((i) => cabin.usable(i));
+  const regions = Object.values(item.regions);
+  return {
+    id: item.id,
+    type: item.type,
+    props: item.props,
+    volumeCm3: volume(item.props),
+    canContain: regions.some((r) => r.relation === "inside"),
+    canSupport: regions.some((r) => r.relation === "on"),
+    canHang: regions.some((r) => r.relation === "hang"),
+    totalMassG: cabin.mass(item),
+    state: item.state,
+    at: item.at,
+    refs: item.refs.filter((id) => cabin.usable(cabin.get(id))),
+    path: cabin.path(item).map((i) => i.id),
+    visibility: item.visibility,
+    regions: item.regions,
+    counts: Object.fromEntries(
+      Object.keys(item.regions).flatMap((k) => {
+        const r = item.regions[k];
+        return "gate" in r && r.gate && item.state[r.gate] !== true
+          ? []
+          : [[k, children.filter((i) => i.at!.region === k).length]];
+      }),
+    ),
+    actions: Object.fromEntries(
+      Object.entries(item.actions).map(([k, b]) => [
+        k,
+        { ...describeBehavior(b), version: item.versions[k] },
+      ]),
+    ),
+  };
+}
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([k, v]) => [k, canonical(v)]),
+    );
+  return value;
+}
+function friendly(error: unknown) {
+  if (error instanceof z.ZodError)
+    return error.issues
+      .slice(0, 2)
+      .map((i) => i.path.join(".") + " " + i.message)
+      .join("；")
+      .slice(0, 400);
+  return error instanceof Error ? error.message.slice(0, 400) : "小屋操作失败";
+}
+type Draft = { item: string; action: string; base: string | null; behavior: string; args: string };
+const versionName = (item: Item, action: string) => "cabin/" + encodeURIComponent(item.id) + "/" + action;
+async function apply(
+  cabin: Cabin,
+  cmd: Command,
+  host: ObjectHost,
+  now: number,
+  scope: Item["visibility"],
+  writes: D1PreparedStatement[],
+): Promise<unknown> {
+  if (cmd.op === "help") return manual(cmd);
+  if (cmd.op === "catalog") return catalogPage(cabin, cmd);
+  if (cmd.op === "type" || cmd.op === "define" || cmd.op === "defaults") {
+    const current = cabin.types.get(cmd.type);
+    if (cmd.op === "type") {
+      if (!current) throw Error("找不到类型 " + cmd.type);
+      return { type: cmd.type, definition: current };
+    }
+    if (cmd.op === "define" && current) throw Error("类型编号已被使用 " + cmd.type);
+    if (cmd.op === "defaults" && !current) throw Error("找不到类型 " + cmd.type);
+    const parsed = cmd.op === "define" ? cmd.definition : definition.parse({ ...current, ...cmd.patch });
+    checkDimensions(parsed, parsed.regions);
+    // Check the complete contents graph and the actual fit before publishing this default.
+    const trial = new Cabin(new Map(), new Map(cabin.types).set(cmd.type, parsed));
+    trial.spawn(cmd.type);
+    writes.push(
+      stmt(
+        "INSERT INTO cabin_types VALUES(?,?) ON CONFLICT(id) DO UPDATE SET definition=excluded.definition",
+        cmd.type,
+        JSON.stringify(parsed),
+      ),
+    );
+    return { type: cmd.type, name: parsed.name };
+  }
+  if (cmd.op === "create") {
+    if (cmd.type === "cabin") throw Error("小屋已有坐标原点");
+    if (cmd.to) cabin.owned(cmd.to.parent);
+    const item = cabin.spawn(cmd.type, cmd.to, undefined, scope);
+    return {
+      id: item.id,
+      type: item.type,
+      at: item.at,
+      contents: cabin.children(item.id).map((i) => ({ id: i.id, type: i.type })),
+    };
+  }
+  if (cmd.op === "consume") {
+    const parent = cabin.owned(cmd.parent);
+    cabin.accessible(parent);
+    cabin.openRegion(parent, cmd.region);
+    const items = cabin
+      .children(parent.id, cmd.region)
+      .filter((i) => i.type === cmd.type && i.props.consumable && cabin.usable(i));
+    if (items.length < cmd.count) throw Error("可食用的同类物品只有 " + items.length + " 件");
+    const taken = items.slice(0, cmd.count);
+    for (const i of taken) cabin.remove(i);
+    return { consumed: taken.map((i) => i.id), remaining: items.length - taken.length };
+  }
+  const item = cabin.owned(cmd.id);
+  cabin.accessible(item);
+  switch (cmd.op) {
+    case "inspect":
+      return inspect(cabin, item);
+    case "move":
+    case "find": {
+      cabin.owned(cmd.to.parent);
+      const from = item.at;
+      const at = cabin.place(item, cmd.to, cmd.op === "find");
+      if (cmd.op === "move") cabin.touch(item);
+      return { id: item.id, at, from };
+    }
+    case "update":
+      if (cmd.props) item.props = properties.parse({ ...item.props, ...cmd.props });
+      if (cmd.state) item.state = data.parse({ ...item.state, ...cmd.state });
+      if (cmd.regions) item.regions = cmd.regions;
+      if (cmd.refs) {
+        for (const id of cmd.refs) cabin.owned(id);
+        item.refs = cmd.refs;
+      }
+      if (cmd.visibility) item.visibility = cmd.visibility;
+      cabin.validateEdit(item);
+      cabin.touch(item);
+      return inspect(cabin, item);
+    case "stow":
+      cabin.stow(item);
+      return { id: item.id, at: null, contents: "所有部件和内容共同收起" };
+    case "remove":
+      cabin.remove(item);
+      return { removed: item.id };
+    case "call": {
+      const behavior = item.actions[cmd.action];
+      if (!behavior) throw Error(item.props.name + " 没有动作 " + cmd.action);
+      if (item.props.installMB && !item.at) throw Error("先把软件安装到设备上");
+      const exposed =
+        "capability" in behavior &&
+        behavior.capability === "game" &&
+        cabin.publicItems().some((i) => i.id === item.id);
+      const result = await runBehavior(
+        item,
+        behavior,
+        cmd.args,
+        host,
+        false,
+        exposed ? item.visibility : "hidden",
+      );
+      cabin.touch(item);
+      return { id: item.id, action: cmd.action, version: item.versions[cmd.action] ?? "initial", result };
+    }
+    case "preview": {
+      const sample = structuredClone(item);
+      const result = await runBehavior(sample, cmd.behavior, cmd.args, host, true);
+      const id = crypto.randomUUID();
+      writes.push(
+        stmt(
+          "INSERT INTO cabin_previews VALUES(?,?,?,?,?,?)",
+          id,
+          item.id,
+          cmd.action,
+          item.versions[cmd.action] ?? null,
+          JSON.stringify(cmd.behavior),
+          JSON.stringify(cmd.args ?? {}),
+        ),
+      );
+      return { preview: id, result, state: sample.state };
+    }
+    case "activate": {
+      const draft = await one<Draft>("SELECT * FROM cabin_previews WHERE id=?", cmd.preview);
+      if (!draft || draft.item !== item.id || draft.action !== cmd.action)
+        throw Error("找不到这个对象动作的试跑记录");
+      if ((item.versions[cmd.action] ?? null) !== draft.base) throw Error("动作版本已改变，请重新试跑");
+      const behavior: Behavior = JSON.parse(draft.behavior);
+      await runBehavior(structuredClone(item), behavior, JSON.parse(draft.args), host, true);
+      const id = crypto.randomUUID(),
+        before = item.actions[cmd.action] ?? null;
+      writes.push(
+        saveVersion(versionName(item, cmd.action), JSON.stringify({ behavior, before }), draft.base, now, id),
+        stmt("DELETE FROM cabin_previews WHERE id=?", cmd.preview),
+      );
+      item.actions[cmd.action] = behavior;
+      item.versions[cmd.action] = id;
+      cabin.touch(item);
+      return { id: item.id, action: cmd.action, version: id };
+    }
+    case "rollback": {
+      const v = await one<Setting>(
+        "SELECT * FROM agent_versions WHERE id=? AND name=?",
+        item.versions[cmd.action] ?? "",
+        versionName(item, cmd.action),
+      );
+      if (!v) throw Error("这个动作已经是初始版本");
+      const before = JSON.parse(v.value).before as Behavior | null;
+      if (before) item.actions[cmd.action] = before;
+      else delete item.actions[cmd.action];
+      if (v.parent) item.versions[cmd.action] = v.parent;
+      else delete item.versions[cmd.action];
+      cabin.touch(item);
+      return { id: item.id, action: cmd.action, version: v.parent, available: !!before };
+    }
+  }
+}
+
+// The caller holds the resident lease. Mutations, host writes, receipt and public revision
+// enter the same fenced SQLite batch. A failed attempt discards its in-memory working copy.
+export async function cabinAction(
+  state: State,
+  raw: unknown,
+  host: ObjectHost,
+  now: number,
+  scope: Item["visibility"],
+) {
+  const cmd = operations.parse(raw),
+    writes: D1PreparedStatement[] = [];
+  const id = "requestId" in cmd ? cmd.requestId : null;
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify(canonical(cmd)))
+    .digest("hex");
+  if (id) {
+    const old = await one<{ fingerprint: string; outcome: string }>(
+      "SELECT * FROM cabin_requests WHERE id=?",
+      id,
+    );
+    if (old) {
+      if (old.fingerprint !== fingerprint) throw Error("requestId 已用于另一项请求");
+      return { outcome: JSON.parse(old.outcome) as Outcome, writes };
+    }
+  }
+  const cabin = await loadCabin(state);
+  let outcome: Outcome;
+  try {
+    const result = await apply(cabin, cmd, host, now, scope, writes);
+    let summary = labels[cmd.op] + "。";
+    if (cmd.op === "consume")
+      summary =
+        "吃掉 " +
+        cmd.count +
+        " 件" +
+        cabin.types.get(cmd.type)!.name +
+        "，该区域还剩 " +
+        (result as { remaining: number }).remaining +
+        " 件。";
+    if (cmd.op === "move" || cmd.op === "find") {
+      const parent = cabin.get(cmd.to.parent),
+        at = (result as { at: Item["at"] }).at!;
+      const region = parent.regions[at.region];
+      summary =
+        cabin.get(cmd.id).props.name +
+        (cmd.op === "move" ? "已放到" : "可以放到") +
+        parent.props.name +
+        "的" +
+        region.label +
+        (region.relation === "installed" ? "" : " (" + at.x + ", " + at.y + ") cm") +
+        "。";
+    }
+    outcome = { status: "done", summary, result };
+    if (id) {
+      writes.push(...cabin.writes(now));
+      syncFurniture(state, cabin);
+    }
+  } catch (e) {
+    writes.length = 0;
+    const error = friendly(e);
+    outcome = { status: "failed", summary: error, result: { error } };
+  }
+  if (id)
+    writes.push(stmt("INSERT INTO cabin_requests VALUES(?,?,?)", id, fingerprint, JSON.stringify(outcome)));
+  return { outcome, writes };
+}
+export async function cabinContext(state: State) {
+  const cabin = await loadCabin(state);
+  const listing = catalogPage(cabin, catalog.parse({ op: "catalog" }));
+  return {
+    latest: state.lastAction?.action === "object" ? state.lastResult : undefined,
+    entry: { action: "object", object: { op: "help" } },
+    commands,
+    items: listing.items.map(({ id, type, name }) => ({ id, type, name })),
+    total: listing.total,
+  };
+}

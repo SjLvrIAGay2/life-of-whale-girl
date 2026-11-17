@@ -6,6 +6,7 @@ import { defaultSite, findActivity, type Block, type Site } from "../content/sit
 import { ActivityDetail, Board, Interactive } from "./activity";
 import { StudioPanel } from "./panels";
 import { fetchPublicPage } from "../lib/fetch-public-page";
+import { CabinInventory, CabinMarkers } from "./cabin";
 import {
   Button,
   ConfigProvider,
@@ -61,40 +62,44 @@ function Room({ home, now }: { home: PublicHome; now: number }) {
     bed = home.room.find((o) => o.kind === "bed");
   return (
     <Typography as="figure" className="room-print">
-      <Flex className="room-scene" role="img" aria-label="鲸鱼娘的小屋，窗外是海，屋内按她的存档陈设">
-        <Image
-          className="room-bg"
-          src={"/room/" + (night ? "room-night" : "room") + ".webp"}
-          width="100%"
-          height="100%"
-          alt=""
-          preview={false}
-        />
-        {home.room.map((o) => o.kind === "alarm" ?
-          <BedsideClock key={o.id} item={o} hour={hour} minute={minute} /> : (
+      <div className="room-canvas">
+        <Flex className="room-scene" role="img" aria-label="鲸鱼娘的小屋，窗外是海，屋内按她的存档陈设">
           <Image
-            key={o.id}
-            className="furniture"
-            src={"/room/" + (inBed && o.id === bed?.id ? (asleep?"asleep":"in-bed") : o.kind) + ".webp"}
-            alt={inBed && o.id===bed?.id ? (asleep?"鲸鱼娘在床上睡觉":"鲸鱼娘醒着，窝在被子里") : furniture[o.kind].name}
-            width={furniture[o.kind].width + "%"}
-            style={{ left: o.x + "%", top: o.y + "%", zIndex: o.kind === "computer" ? 99 : Math.round(o.y) }}
+            className="room-bg"
+            src={"/room/" + (night ? "room-night" : "room") + ".webp"}
+            width="100%"
+            height="100%"
+            alt=""
             preview={false}
           />
-        ))}
-        {(!inBed || !bed) && (
-          <Image
-            className="furniture resident"
-            src="/room/resident.webp"
-            alt="鲸鱼娘"
-            width="19%"
-            preview={false}
-          />
-        )}
-      </Flex>
+          {home.room.map((o) => o.kind === "alarm" ?
+            <BedsideClock key={o.id} item={o} hour={hour} minute={minute} /> : (
+            <Image
+              key={o.id}
+              className="furniture"
+              src={"/room/" + (inBed && o.id === bed?.id ? (asleep?"asleep":"in-bed") : o.kind) + ".webp"}
+              alt={inBed && o.id===bed?.id ? (asleep?"鲸鱼娘在床上睡觉":"鲸鱼娘醒着，窝在被子里") : furniture[o.kind].name}
+              width={furniture[o.kind].width + "%"}
+              style={{ left: o.x + "%", top: o.y + "%", zIndex: o.kind === "computer" ? 99 : Math.round(o.y) }}
+              preview={false}
+            />
+          ))}
+          {(!inBed || !bed) && (
+            <Image
+              className="furniture resident"
+              src="/room/resident.webp"
+              alt="鲸鱼娘"
+              width="19%"
+              preview={false}
+            />
+          )}
+        </Flex>
+        {home.cabin && <CabinMarkers items={home.cabin} />}
+      </div>
       <Typography as="figcaption">
         <Icon name={night ? "moon" : "sun"} size={15} /> 我的小屋 · 靠海的窗
       </Typography>
+      {!!home.cabin?.length && <CabinInventory items={home.cabin} />}
     </Typography>
   );
 }
@@ -401,24 +406,30 @@ export function Home({
   day,
   search,
   renderedAt,
+  live = false,
 }: {
   initial: PublicHome;
   page: string;
   day?: string;
   search: string;
   renderedAt?: number;
+  live?: boolean;
 }) {
   const [home, setHome] = useState(initial),
     [now, setNow] = useState(() => renderedAt ?? Date.now());
   useEffect(() => {
     setNow(Date.now());
     const ctl = new AbortController();
+    let revision=initial.revision;
     async function refresh() {
       setNow(Date.now());
       if (document.hidden || page === "preview") return;
       try {
-        const data = await fetchPublicPage(new URLSearchParams(search));
-        if (!ctl.signal.aborted) setHome(data);
+        const data = await fetchPublicPage(new URLSearchParams(search),ctl.signal);
+        if (!ctl.signal.aborted && data.revision>=revision) {
+          revision=data.revision;
+          setHome(old=>old.revision===data.revision && (old.syncedAt??0)>(data.syncedAt??0)?old:data);
+        }
       } catch {
         /* Keep the last public copy, age it on the clock. */
       }
@@ -431,13 +442,18 @@ export function Home({
       }, 30000 - Date.now() % 30000);
     }
     scheduleRefresh();
+    const stream=live && page!=="preview" && typeof EventSource!=="undefined" ? new EventSource("/api/v1/life/revisions") : null;
+    if(stream) stream.onmessage=message=>{if(Number(message.data)>revision) void refresh();};
+    window.addEventListener("online",refresh);
     document.addEventListener("visibilitychange", refresh);
     return () => {
       ctl.abort();
+      stream?.close();
+      window.removeEventListener("online",refresh);
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [page, search]);
+  }, [page, search, live, initial.revision]);
   const site = home.site ?? defaultSite,
     item = page === "activity" ? home.activities?.find((a) => a.id === day) : undefined;
   const current = site.pages.find((p) => p.slug === page);

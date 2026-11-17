@@ -14,6 +14,7 @@ import { activityArchive,legacyReading } from "../lib/activities";
 import { visibleWorkSteps } from "../lib/works";
 import { nextPersonalPlan } from "../lib/personal-plans";
 import { processPainting, tick } from "../lib/life";
+import { initializeCabin } from "../lib/cabin-store";
 import { upgradeExperience } from "../lib/experience-migration";
 import { nextBell } from "../lib/sleep";
 import { qqToken, acceptQQ, deliverQQ, nextQQDelivery, recoverQQDeliveries } from "../lib/qq";
@@ -108,6 +109,25 @@ if (!sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='
     sqlite.exec("COMMIT");
   } catch(error) { sqlite.exec("ROLLBACK"); throw error; }
 }
+if (!sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='cabin_items'").get()) {
+  sqlite.exec("BEGIN IMMEDIATE");
+  try {
+    sqlite.exec(readFileSync(new URL("./drizzle/0011_cabin_objects.sql",import.meta.url),"utf8"));
+    sqlite.exec("COMMIT");
+  } catch(error) {sqlite.exec("ROLLBACK");throw error;}
+}
+async function migrateCabin() {
+  if(!sqlite.prepare("SELECT 1 FROM resident WHERE id='whale' AND json_extract(state,'$.cabinVersion') IS NOT 1").get()) return;
+  const token=await tickLock(Date.now());
+  if(!token) {
+    if(process.argv.includes("--migrate-only")) throw Error("常驻端仍在处理动作，稍后重试迁移");
+    return;
+  }
+  try {
+    const {state}=await house();
+    if(state.cabinVersion!==1) await commit(token,state,await initializeCabin(state));
+  } finally {await unlock(token);}
+}
 if (process.argv.includes("--migrate-only")) {
   if (sqlite.prepare("SELECT 1 FROM resident WHERE id='whale' AND json_extract(state,'$.experienceVersion') IS NOT 1").get()) {
     const lock=await tickLock(Date.now());
@@ -120,6 +140,7 @@ if (process.argv.includes("--migrate-only")) {
       }
     } finally { await unlock(lock); }
   }
+  await migrateCabin();
   sqlite.close();
   process.exit(0);
 }
@@ -141,13 +162,14 @@ if (process.argv.includes("--import")) {
       "agent_versions",
       "channel_state",
       "memory_rules", "chat_images", "works", "work_steps", "art_jobs", "reply_turns", "model_usage", "memory_vectors","activities","play_saves","site_editions",
+      "cabin_types","cabin_items","cabin_requests","cabin_previews",
     ]) {
       const fields = sqlite
         .prepare("PRAGMA table_info(" + t + ")")
         .all()
         .map((x) => x.name);
       const save = sqlite.prepare(
-        "INSERT INTO " +
+        (t==="cabin_items"?"INSERT OR REPLACE INTO ":"INSERT INTO ") +
           t +
           "(" +
           fields.join(",") +
@@ -178,7 +200,8 @@ if (process.argv.includes("--import")) {
     sqlite.exec("UPDATE messages SET handled_at=made WHERE side='in' AND handled_at IS NULL AND (EXISTS(SELECT 1 FROM memories WHERE id='chat-in-'||messages.id) OR EXISTS(SELECT 1 FROM messages r WHERE r.reply_to=messages.id))");
     migrateActivities();
     const imported=inventory(sqlite);
-    for(const key of ["messages","memories","drawings","works","work_steps","chat_images","memory_rules","art_jobs"]) {
+    const objectTables=["cabin_types","cabin_items","cabin_requests","cabin_previews"].filter(k=>Array.isArray(tables[k]));
+    for(const key of ["messages","memories","drawings","works","work_steps","chat_images","memory_rules","art_jobs",...objectTables]) {
       if(imported[key] !== (tables[key]?.length??0)) throw Error("迁移后数量不匹配 "+key);
     }
     sqlite.prepare("INSERT OR REPLACE INTO channel_state VALUES('health/migration',?)").run(JSON.stringify({
@@ -192,9 +215,12 @@ if (process.argv.includes("--import")) {
     sqlite.exec("ROLLBACK");
     throw e;
   }
+  await migrateCabin();
   sqlite.close();
   process.exit(0);
 }
+await house();
+await migrateCabin();
 const site = env.WHALE_ORIGIN;
 if (new URL(site).protocol !== "https:")
   throw Error("A HTTPS origin is required");

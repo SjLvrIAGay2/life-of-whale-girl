@@ -102,6 +102,9 @@ export async function publicHome(previewSite?:import("../content/site").Site): P
     ),
     publicRoom(),previewSite??publishedSite(),
   ]);
+  const {loadCabin}=await import("../lib/cabin-store");
+  const cabin=await loadCabin(state);
+  const visible=cabin.publicItems();
   const pins=siteBindings(site);
   const [activities,boundArt,boundPosts]=await Promise.all([
     publicActivities(state,pins.activities),
@@ -116,7 +119,7 @@ export async function publicHome(previewSite?:import("../content/site").Site): P
     mode: asleep?"asleep":"awake",
     inBed,
     activity: current?.label??(asleep?"在床上睡觉":inBed?"醒着，在床上躺一会儿":"在小屋"),
-    room: state.room,
+    room: cabin.scene(visible),cabin:visible,
     revision,
     posts: posts.map((p) => ({
       ...p,
@@ -266,10 +269,11 @@ export function saveVersion(
   value: string,
   parent: string | null,
   now: number,
+  id: string = crypto.randomUUID(),
 ) {
   return stmt(
     "INSERT INTO agent_versions(id,name,value,parent,made) VALUES (?,?,?,?,?)",
-    crypto.randomUUID(),
+    id,
     name,
     value,
     parent,

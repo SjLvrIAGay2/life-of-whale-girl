@@ -150,3 +150,18 @@ export const activities = sqliteTable("activities", {
 export const siteEditions = sqliteTable("site_editions", {
   id: text("id").primaryKey(), parent: text("parent"), made: integer("made").notNull(), document: text("document").notNull(),
 });
+
+export const cabinTypes = sqliteTable("cabin_types", {
+  id: text("id").primaryKey(), definition: text("definition").notNull(),
+});
+export const cabinItems = sqliteTable("cabin_items", {
+  id: text("id").primaryKey(), type: text("type").notNull(), body: text("body").notNull(),
+  source: text("source"), sourceId: text("source_id"),
+});
+export const cabinRequests = sqliteTable("cabin_requests", {
+  id: text("id").primaryKey(), fingerprint: text("fingerprint").notNull(), outcome: text("outcome").notNull(),
+});
+export const cabinPreviews = sqliteTable("cabin_previews", {
+  id: text("id").primaryKey(), item: text("item").notNull(), action: text("action").notNull(),
+  base: text("base"), behavior: text("behavior").notNull(), args: text("args").notNull(),
+});

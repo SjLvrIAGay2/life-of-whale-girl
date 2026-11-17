@@ -310,7 +310,8 @@ export async function POST(req: Request, c: Ctx) {
       if (!token) return json({ error: "鲸鱼娘正忙，请稍后再试" }, 409);
       try {
         const { state } = await house();
-        if (op === "room") arrange(state, b);
+        const writes:D1PreparedStatement[]=[];
+        if (op === "room") writes.push(...(await arrange(state,b)).writes);
         else {
           if (
             typeof b.name !== "string" ||
@@ -320,7 +321,7 @@ export async function POST(req: Request, c: Ctx) {
             throw Error("站名须在四十字以内");
           state.name = b.name.trim();
         }
-        await commit(token, state, []);
+        await commit(token, state, writes);
         return json({ ok: true, room: state.room, name: state.name });
       } finally {
         await unlock(token);
