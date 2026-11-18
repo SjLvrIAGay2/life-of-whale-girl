@@ -1,4 +1,5 @@
 import { all, memory, one, stmt, type Memory } from "../db";
+import type { State } from "../content/initial";
 
 export type Work = {id:string;scope:string;title:string;kind:string;state:string;made:number;updated:number;next:string};
 export type WorkStep = {id:string;made:number;body:string;evidence:string|null;art:string|null;url:string|null;level:string|null};
@@ -72,6 +73,41 @@ export async function browseOwnWorks(query:string,offset:number) {
 export function findOwnWork(id:string) {
   return one<ArchiveRow>(ownArchive+" SELECT * FROM archive WHERE id=?",id);
 }
+
+// Each option carries an actual memory ID and the operations it can substantiate.
+// Filter by the selected work's scope before putting any text into the decision.
+export async function workEvidenceChoices(id:unknown, action?:unknown) {
+  const work=await one<Work>("SELECT * FROM works WHERE id=? AND scope IN ('public','self') AND state<>'hidden'",short(id,100));
+  if(!work) return {evidence:[]};
+  const picture=`EXISTS(SELECT 1 FROM drawings d WHERE m.source='/picture/'||d.id AND d.scope IN ('public',w.scope))`;
+  const advance=`(m.kind IN ('observation','episode','event') OR (m.kind='drawing' AND ${picture}))`;
+  const finish=`CASE WHEN w.kind='drawing' THEN m.kind='drawing' AND
+    EXISTS(SELECT 1 FROM drawings d WHERE m.source='/picture/'||d.id AND d.scope=m.scope) AND
+    (EXISTS(SELECT 1 FROM work_steps s WHERE s.work=w.id AND m.source='/picture/'||s.art)
+      OR EXISTS(SELECT 1 FROM art_jobs j WHERE j.work=w.id AND m.source='/picture/'||j.art))
+    ELSE ${advance} OR (w.kind='writing' AND m.kind='manuscript' AND EXISTS
+      (SELECT 1 FROM work_steps s WHERE s.work=w.id AND s.level='draft' AND s.evidence=m.id)) END`;
+  const rows=await all<Pick<Memory,'id'|'kind'|'made'|'body'|'source'> & {advance:number;finish:number}>(`WITH candidates AS (
+    SELECT m.id,m.kind,m.made,substr(m.body,1,240) AS body,m.source,${advance} AS advance,${finish} AS finish
+    FROM memories m JOIN works w ON w.id=? WHERE m.hidden=0 AND m.scope IN ('public',w.scope))
+    SELECT * FROM candidates WHERE CASE ? WHEN 'advance' THEN advance WHEN 'finish' THEN finish ELSE advance OR finish END
+    ORDER BY made DESC,id LIMIT 12`,work.id,short(action,20));
+  return {target:{id:work.id,title:work.title,kind:work.kind,state:work.state},evidence:rows.map(row=>({
+    evidenceId:row.id,kind:row.kind,date:new Date(row.made+8*3600000).toISOString().slice(0,16).replace('T',' '),
+    description:row.body,source:row.source || undefined,
+    actions:[...(row.advance?["advance"]:[]),...(row.finish?["finish"]:[])],
+  }))};
+}
+
+// This exact legacy receipt left a failed input waiting for the default 50 minutes.
+export function recoverWorkEvidence(state:State, now:number) {
+  if(state.lastAction?.action!=="work" || state.lastAction.status!=="skipped" ||
+    state.lastAction.summary!=="找不到所引用的进度记录（work.evidence）。" || state.lastResult!=null) return false;
+  state.lastAction={...state.lastAction,status:"failed"};
+  state.lastResult={error:state.lastAction.summary,field:"work.evidence",attempts:1};
+  if(state.mode==="awake") state.nextAt=Math.min(state.nextAt,now);
+  return true;
+}
 export function artForConversation(scope:string,peers:string[],cue:string,memories:Memory[]) {
   const terms=[...new Set((cue.slice(0,420).toLowerCase().match(/[\p{Script=Han}]{2,}|[a-z\d]{3,}/gu)??[])
     .flatMap(word=>word.length<3?[word]:[word,...Array.from({length:word.length-1},(_,i)=>word.slice(i,i+2))]))].slice(0,100);
@@ -103,9 +139,9 @@ export function workStep(work:string,scope:string,now:number,body:string,source:
     id,now,short(body,1800),source.evidence??null,source.art??null,source.url??null,source.level??null,work,scope,
     source.evidence??null,source.evidence??null,scope,source.art??null,source.art??null,scope);
 }
-type WorkInputField = "work.action" | "work.title" | "work.id";
+type WorkInputField = "work.action" | "work.title" | "work.id" | "work.evidence";
 export class WorkInputError extends Error {
-  constructor(readonly field:WorkInputField, message:string) { super(message); }
+  constructor(readonly field:WorkInputField, message:string, readonly ref?:string) { super(message); }
 }
 function skippedWork(summary:string, ref?:string, field?:WorkInputField) {
   return {writes:[], status:"skipped" as const, summary, ref, field};
@@ -149,15 +185,19 @@ export async function prepareWorkEdit(scope:string, raw:any, now:number, newEvid
   if(raw.action==="shelve") state="shelved";
   else if(raw.action==="resume") state="active";
   else {
-    const evidenceId=short(raw.evidence,180);
-    let evidence=newEvidence.find(m=>m.id===evidenceId) ?? await one<Memory>("SELECT * FROM memories WHERE id=? AND scope IN ('public',?) AND hidden=0",evidenceId,scope);
+    const evidenceId=typeof raw.evidence==="string"?raw.evidence.trim():"";
+    if(!(draft && work.kind==="writing") && raw.evidence!=null && !evidenceId)
+      return skippedWork("work.evidence 需要一条记录的编号，可从 workHelp.evidence 选择 evidenceId。",id,"work.evidence");
+    let evidence=newEvidence.find(m=>m.id===evidenceId && !m.hidden && ["public",scope].includes(m.scope)) ??
+      await one<Memory>("SELECT * FROM memories WHERE id=? AND scope IN ('public',?) AND hidden=0",evidenceId,scope);
     if(work.kind==="drawing" && raw.action==="finish") {
       evidence=await one<Memory>(`SELECT m.* FROM memories m JOIN drawings d ON m.source='/picture/'||d.id AND m.scope=d.scope
         WHERE m.kind='drawing' AND m.hidden=0 AND m.scope IN ('public',?) AND (?='' OR m.id=?)
         AND (EXISTS(SELECT 1 FROM work_steps s WHERE s.work=? AND s.art=d.id)
           OR EXISTS(SELECT 1 FROM art_jobs j WHERE j.work=? AND j.art=d.id))
         ORDER BY m.made DESC LIMIT 1`,scope,evidenceId,evidenceId,work.id,work.id);
-      if(!evidence) return skippedWork(evidenceId?"这条记录无法核实《"+work.title+"》已成图。":"《"+work.title+"》还没有已保存的成图。",id);
+      if(!evidence) return skippedWork(evidenceId?"这条记录无法核实《"+work.title+"》已成图。可从 workHelp.evidence 选择这件作品的成图记录。":
+        "《"+work.title+"》还没有已保存的成图。",id,evidenceId?"work.evidence":undefined);
     }
     if(draft && work.kind==="writing") {
       const version=manuscriptStep(work,draft,raw.action==="finish",now,origins);
@@ -167,19 +207,22 @@ export async function prepareWorkEdit(scope:string, raw:any, now:number, newEvid
     else if(work.kind==="writing" && raw.action==="finish" && evidence?.kind==="manuscript" &&
       await one("SELECT 1 FROM work_steps WHERE work=? AND level='draft' AND evidence=?",work.id,evidence.id))
       manuscript=evidence.id;
-    else if(evidence && ["observation","drawing","episode","event"].includes(evidence.kind))
+    else if(evidence && ["observation","drawing","episode","event"].includes(evidence.kind)) {
+      if(evidence.kind==="drawing" && !await one("SELECT 1 FROM drawings WHERE ?='/picture/'||id AND scope IN ('public',?)",evidence.source,scope))
+        return skippedWork("这条绘画记录没有对应的已保存图片。可从 workHelp.evidence 选择其他进度记录。",id,"work.evidence");
       writes.push(workStep(work.id,scope,now,evidence.body,{evidence:evidence.id,
         url:evidence.source.startsWith("https://")?evidence.source:null,
         art:evidence.kind==="drawing"?evidence.source.split("/").pop():null,level:evidence.category??evidence.kind}));
+    }
     else {
-      if(evidenceId && !evidence) return skippedWork("找不到所引用的进度记录（work.evidence）。",id);
+      if(evidenceId && !evidence) return skippedWork("找不到所引用的进度记录。work.evidence 填记录编号，可从 workHelp.evidence 选择 evidenceId；感想原文可用 reflect 的 idea，文字新稿用 work.draft。",id,"work.evidence");
       if(evidence?.kind==="day_plan" || evidence?.kind==="promise")
-        return skippedWork("这条记录写的是打算，《"+work.title+"》还没有增加实际进度。",id);
-      if(evidence) return skippedWork("所引用的记录没有可归入《"+work.title+"》的作品进展。",id);
+        return skippedWork("这条记录写的是打算，《"+work.title+"》还没有增加实际进度。可从 workHelp.evidence 选择已发生的记录。",id,"work.evidence");
+      if(evidence) return skippedWork("所引用的记录没有可归入《"+work.title+"》的作品进展。可从 workHelp.evidence 选择进度记录。",id,"work.evidence");
       if(work.kind==="drawing" && draft)
         return skippedWork("这次收到的是文字草稿。《"+work.title+"》没有新增画面，也没有画稿入队。",id);
       return skippedWork(work.kind==="writing"?"这次没有收到新稿（work.draft）或进度记录（work.evidence）。":
-        "这次没有附上可登记进展的记录（work.evidence）。",id);
+        "这次没有附上可登记进展的记录（work.evidence）。",id,"work.evidence");
     }
     state=raw.action==="finish"?"done":"active";
   }

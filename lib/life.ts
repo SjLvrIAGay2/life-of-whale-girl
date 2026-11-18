@@ -42,7 +42,7 @@ import { contactPreferences,voicePreference } from "./contact-preferences";
 import { turnImages } from "./chat-images";
 import { avoidedTerms, mentionsAvoided, ruleVersion } from "./memory-control";
 import { nextAnniversary, relationshipMood, sharedEntries, sharedWrites } from "./shared-memory";
-import { artForConversation, attachReading, browseOwnWorks, deskWorks, editWork, findOwnWork, newWork, prepareWorkEdit, workList, workStep, WorkInputError } from "./works";
+import { artForConversation, attachReading, browseOwnWorks, deskWorks, editWork, findOwnWork, newWork, prepareWorkEdit, recoverWorkEvidence, workEvidenceChoices, workList, workStep, WorkInputError } from "./works";
 import { cabinAction, cabinContext } from "./cabin";
 import { arrangeFurniture, initializeCabin } from "./cabin-store";
 import { gameKinds } from "./games";
@@ -560,7 +560,8 @@ async function execute(
     case "help": {
       const name = a.name && actionSchema.shape.action.parse(a.name);
       const result = name ? { name, usage: activityHelp[name],
-        ...(name==="reflect"?{activities:await reflectionActivities()}: {}) } : { actions: actionSchema.shape.action.options };
+        ...(name==="reflect"?{activities:await reflectionActivities()}: {}),
+        ...(name==="work"?await workEvidenceChoices((a.work as {id?:unknown})?.id ?? s.focusWork): {}) } : { actions: actionSchema.shape.action.options };
       outcome = { status: "done", summary: "查看了" + (name ?? "日常动作") + "的用法。", result };
       break;
     }
@@ -747,7 +748,7 @@ async function execute(
       const selected=typeof request?.id==="string" && await findOwnWork(request.id.trim());
       if(selected && selected.scope===privateScope) planScope=receiptScope=privateScope;
       const edited=await prepareWorkEdit(planScope,a.work,t.now,t.newMem);
-      if ("field" in edited && edited.field) throw new WorkInputError(edited.field,edited.summary);
+      if ("field" in edited && edited.field) throw new WorkInputError(edited.field,edited.summary,edited.ref);
       t.writes.push(...edited.writes);
       planKind="writing";
       if("manuscript" in edited && edited.manuscript) progress={id:edited.manuscript,complete:request?.action==="finish"};
@@ -1445,6 +1446,7 @@ export async function tick(
       const recovery = await recoverLastAction(state);
       await commit(lock, state, recovery, true);
     }
+    if(recoverWorkEvidence(state,now)) await commit(lock,state,[],true);
     const t: Turn = { state, now, writes: [], newMem: [] };
     const defs = await versions();
     const originalNext = state.nextAt;
@@ -1565,11 +1567,13 @@ export async function tick(
       ]);
       const archive=["work","archive"].includes(state.lastAction?.action??"") && state.lastResult && typeof state.lastResult==="object" && "items" in state.lastResult ? state.lastResult : undefined;
       const help = state.lastAction?.action === "help" ? state.lastResult : undefined;
+      const workRequest=(state.lastResult as {received?:{work?:{id?:unknown;action?:unknown}}}|undefined)?.received?.work;
+      const workHelp=state.lastAction?.action==="work" && ["failed","skipped"].includes(state.lastAction.status)
+        ? {usage:activityHelp.work,...await workEvidenceChoices(state.lastAction.ref ?? workRequest?.id,workRequest?.action)} : undefined;
       if(archive || help || state.lastAction?.action==="object") leisure.latest=undefined;
       const decision = {
         self: persona(defs), sleep, rest, readingProgress,desk,works,cabin,help,archive,duePlans,
-        workHelp:state.lastAction?.action==="work" && ["failed","skipped"].includes(state.lastAction.status)
-          ? {usage:activityHelp.work} : undefined,
+        workHelp,
         reflection:state.lastAction?.action==="reflect" && state.lastAction.status==="failed"
           ? {usage:activityHelp.reflect,activities:leisure.recent} : undefined,
         question:state.question?.source && !readingSources.includes(state.question.source) ? {text:state.question.text} : state.question??(state.attention?{text:state.attention}:undefined),
@@ -1621,7 +1625,7 @@ export async function tick(
           ? (prior.attempts??1)+1 : 1;
         state.nextAt = now + (field ? [1,5,15][Math.min(attempts-1,2)] : 15) * 60000;
         const detail=actionProblem(error);
-        finishAction(state,action,now,{status:"failed",summary:"这次动作未完成。"+detail,
+        finishAction(state,action,now,{status:"failed",summary:"这次动作未完成。"+detail,ref:error instanceof WorkInputError?error.ref:undefined,
           result:{error:detail,...(field ? {field,attempts,
             received:action==="work" ? {work:workInputTrace(result?.work)} : {evidenceId:clip(result?.evidenceId,80),idea:clip(result?.idea,350)}} : {})}});
         state.activity = "在小屋";
