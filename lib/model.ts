@@ -32,6 +32,7 @@ export async function think(
     data,
     key,
     model,image,receipt,undefined,task==="persona_replay"?"replay":priority==="chat",n,
+    task==="sleep_review" || task==="friend_review" ? n.sleepReviewTokens : n.modelTokens,
   )).catch(async error => {
     if (counted) await discardModelCall(now);
     throw error;
@@ -47,6 +48,7 @@ export async function generate(
   endpoint: string=links.defaults.model,
   conversation:boolean|"replay"=false,
   n=numbers.defaults,
+  outputTokens=n.modelTokens,
 ) {
   const content = modelContext(data,conversation?n.chatContextChars:image?n.visionContextChars:n.textContextChars);
   const messages: Message[] = [
@@ -85,7 +87,7 @@ export async function generate(
         type:"object",properties:{decision:{type:"string",enum:["send","silent"]},messages:{type:"array",items:{type:"string"},maxItems:4}},
         required:["decision"],additionalProperties:true}}} : { type: "json_object" },
       ...(deepseek ? { thinking: { type: "disabled" } } : {temperature:0}),
-      max_tokens: n.modelTokens,
+      max_tokens: outputTokens,
       stream: false,
     }),
     signal: AbortSignal.timeout(n.modelTimeoutMs),

@@ -6,6 +6,7 @@ type ChatTurn = {
   visuals?: unknown[];
   interactions?: unknown[];
   friendCard: { promises: unknown[] };
+  expressionGuide?: unknown[];
   sharedMemories?: unknown[];
   toolResult?: unknown;
   rest?: unknown;
@@ -19,6 +20,8 @@ export function chatInstructions(turn: ChatTurn) {
       : "unread 是这次读到的来信。好友刚说的更正优先。谈近况看 activity 和 lastAction，回忆往事留意日期和说话人，记不清就直说。",
     '发消息用 {"decision":"send","messages":["你想说的话"]}，可分一到四条中文气泡。想保持安静就用 {"decision":"silent"}。尊重好友指定的语气和发送方式。',
   ];
+  if (turn.expressionGuide?.length)
+    lines.push("expressionGuide 是你学过的说话方法。先看好友这次的用意、情绪和你们刚才的语气。合适时挑一种，借它的句式或节奏，用眼前这件事重新组织自己的话。遇到 avoid 的场合就略过。尊重对方明确的要求，留意最近几轮已经用过的说法。");
   if (turn.unread.length)
     lines.push("谈到睡醒或晚回时，timing.receivedAt 是来信时间，readAt 是读到的时间。用 receivedMode 看来信时自己的状态，unknown 表示不清楚。用 sleep 看自己现在的状态。好友此刻是否醒着，以对方说的话为准。");
   if (turn.rest)

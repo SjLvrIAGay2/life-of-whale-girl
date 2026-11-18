@@ -25,7 +25,7 @@ async function indexBatch() {
   )));
   return rows.length;
 }
-export async function semanticHits(scopes: string[], cue: string, excludeIds: string[] = []) {
+export async function semanticHits(scopes: string[], cue: string, excludeIds: string[] = [], kind?: "style") {
   const encoder = env.WHALE_MEMORY_EMBED;
   if (!encoder || !cue.trim() || !scopes.length) return [];
   const n=numbers.read(await currentOverrides());
@@ -37,7 +37,7 @@ export async function semanticHits(scopes: string[], cue: string, excludeIds: st
   for (;;) {
     const rows = await all<{cursor:number;id:string;vector:Uint8Array}>(`SELECT m.rowid AS cursor,m.id,v.vector
       FROM memories m JOIN memory_vectors v ON v.id=m.id WHERE m.rowid>? AND v.model=?
-      AND m.scope IN (${scopeSQL}) AND m.hidden=0 AND m.kind NOT IN ('profile','habit_sample') AND (m.kind<>'promise' OR m.resolved=0)
+      AND m.scope IN (${scopeSQL}) AND m.hidden=0 AND ${kind==="style" ? "m.kind='style'" : "m.kind NOT IN ('style','profile','habit_sample','source_quote')"} AND (m.kind<>'promise' OR m.resolved=0)
       ORDER BY m.rowid LIMIT 160`, cursor, encoder.model,...scopes);
     for (const row of rows) {
       if (excluded.has(row.id)) continue;

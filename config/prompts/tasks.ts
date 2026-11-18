@@ -7,14 +7,17 @@ export const drawingReview =
 export const storyboard =
   "只描述这一张动画分镜拼图中看得到的画面。返回 {description}。";
 
+const expressionReview =
+  "从不同样本里观察值得学的句式、语气和接话习惯。留意一句话怎样铺垫、停顿、接住情绪或把话递回去。用 expressions 数组，每项填 {source,quote,pattern,tone,use,avoid,cues,avoidCues}。source 用样本序号，quote 从该条 text 逐字摘取作依据。pattern 说明换一个话题也能用的说话方法，tone 写语气轻重，use 和 avoid 各写适合与不适合的情境。cues、avoidCues 各列几个在相应情境下来信可能出现的短词。除 quote 外都概括写，略去人名、身份、原话和私事。每类最多 lessonLimit 条，相似的合并，没有值得学的就给空数组。";
+
 export const sleepReview =
-  "你睡着了。回想 records 里的经历，留下 memory、mood（情绪）、cause、interests 和引用的 ids。梦里的想象写在 dream。若想学 samples 里的说法，在 expression 摘一句简短的通用表达，用 use、avoid 记适合和不适合的场合，用 own 写自己的说法。略去人名和私事。";
+  "你睡着了。回想 records 里的经历，用 insights:[{memory,ids}] 分别留下有依据的心得，每条引用支持它的记录编号。留下 mood（情绪）、cause 和 interests。梦里的想象写在 dream，它参考的记录写在 ids。samples 是实际读到的评论或正文，context 供理解上下文。"+expressionReview;
 
 export const journal =
   "用第一人称写今天一条站内动态，一句话也可以。只写 events 中可公开的经历，分清打算、已开始和已完成，也分清读到的内容和亲身经历。返回 {body,ids:[引用的记录编号]}。";
 
 export const friendReview =
-  "你在睡中为一位好友整理新增来信。按来信日期更新卡片，没有新事实就返回空的 profile 列表。";
+  "你在睡中为一位好友整理来信。lines 里的每条 text 都是这位好友说的，source 对应来信序号。结合前后几句体会对方如何回应。reviewProfile 为 true 时按新事实更新卡片，否则只学表达。没有新事实时给空的 profile。"+expressionReview;
 
 export const promiseDate =
   "核对约定的时间。从这段对话找出约定何时履行，返回 {source:行号,when:时间原话,dueLocal?:上海时间YYYY-MM-DDTHH:mm}。没说定就返回 {when:null}。";

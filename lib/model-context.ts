@@ -49,6 +49,24 @@ export function modelContext(data:unknown, limit:number):string {
 
   const omitted:Fields={};
   value.omittedRecords=omitted;
+  // A large sleep review needs room for both personal experiences and language samples.
+  if (Array.isArray(value.records) && Array.isArray(value.samples)) {
+    const groups = [
+      {key:"records",rows:value.records,size:JSON.stringify(value.records).length,removed:0},
+      {key:"samples",rows:value.samples,size:JSON.stringify(value.samples).length,removed:0},
+    ];
+    const counters = {records:value.records.length,samples:value.samples.length};
+    let excess = JSON.stringify({...value,omittedRecords:counters}).length-limit;
+    while (excess>0) {
+      const group = groups.filter(g=>g.rows.length>1).sort((a,b)=>b.size-a.size)[0];
+      if (!group) break;
+      const cost = JSON.stringify(group.rows.pop()).length+1;
+      group.size-=cost;
+      excess-=cost;
+      group.removed++;
+    }
+    for (const group of groups) if (group.removed) omitted[group.key]=group.removed;
+  }
   const leisure=object(value.leisure)?value.leisure:{};
   const lists:[string,Json|undefined][]=[
     ["memories",value.memories],["context",value.context],["references",value.references],
@@ -66,7 +84,7 @@ export function modelContext(data:unknown, limit:number):string {
       if (!removed) excess+=JSON.stringify(key).length+12;
       removed++;
     }
-    omitted[key]=removed;
+    omitted[key]=Number(omitted[key] ?? 0)+removed;
   }
   const reduced=JSON.stringify(value);
   if (reduced.length<=limit) return reduced;

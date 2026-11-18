@@ -2,8 +2,11 @@ import { numbers } from "../config/numbers.ts";
 import { friendMemoryErrors } from "../config/texts/errors.ts";
 import { friendReview, promiseDate, profileInstructions } from "../config/prompts/tasks";
 import { createHash } from "node:crypto";
-import { dayOf } from "../content/initial";
-import { all, memory, one, stmt, type ChatLine, type Memory } from "../db";
+import { dayOf, residentId } from "../content/initial";
+import { all, currentOverrides, memory, one, stmt, type ChatLine, type Memory } from "../db";
+import { styleReviewProgress, styleWrites } from "./expression-learning";
+import { avoidedTerms, ruleVersion } from "./memory-control";
+import { modelContext } from "./model-context";
 import { identityFor, relatedPeers } from "./conversation";
 import { think } from "./model";
 
@@ -50,10 +53,10 @@ export function shanghaiDate(ms:number) {
   return new Date(ms+numbers.defaults.shanghaiOffsetMs).toISOString().slice(0,16);
 }
 
-export function profileWrites(scope: string, raw: unknown, lines: SourceLine[]) {
+export function profileWrites(scope: string, raw: unknown, lines: SourceLine[], limit=16) {
   const writes: D1PreparedStatement[] = [];
   if (!Array.isArray(raw)) return writes;
-  for (const item of raw.slice(0,16)) {
+  for (const item of raw.slice(0,limit)) {
     if (!item || !Number.isInteger(item.source)) continue;
     const line = lines[item.source-1];
     const quote = text(item.quote,400), value = text(item.value,240);
@@ -85,21 +88,59 @@ export function profileWrites(scope: string, raw: unknown, lines: SourceLine[]) 
   return writes;
 }
 
+// An archived conversation may already have a profile review from an earlier version.
+// Only genuine incoming conversation records participate in the historical style pass.
+export const pendingFriendLetters = `FROM messages l LEFT JOIN memories c ON c.id='chat-in-'||l.id
+  LEFT JOIN channel_state p ON p.id='style-review/chat-in-'||l.id
+  WHERE l.withheld=0 AND l.withdrawn=0 AND l.handled_at IS NOT NULL AND l.side='in' AND COALESCE(c.hidden,0)=0
+  AND (l.reviewed=0 OR (c.kind='conversation' AND COALESCE(p.value,'0')<>'-1'))`;
+
 export async function reviewFriendBatch(now: number) {
-  const first = await one<{peer:string}>("SELECT peer FROM messages WHERE withheld=0 AND reviewed=0 AND handled_at IS NOT NULL AND side='in' ORDER BY made,rowid LIMIT 1");
+  const first = await one<{peer:string;reviewed:number}>("SELECT l.peer,l.reviewed "+pendingFriendLetters+" ORDER BY l.reviewed,l.made,l.rowid LIMIT 1");
   if (!first) return [];
   const identity = await identityFor(first.peer), scope = "chat:"+identity;
-  const peers = await relatedPeers(identity);
-  const rows = await all<SourceLine>("SELECT id,made,side,body FROM messages WHERE withheld=0 AND reviewed=0 AND side='in' AND handled_at IS NOT NULL AND peer IN ("+
-    peers.map(()=>"?").join(",")+") ORDER BY made,rowid LIMIT 18",...peers);
-  let size=0;
-  const lines: SourceLine[]=[];
-  for (const row of rows) { if (lines.length && size+row.body.length>11500) break; lines.push(row); size+=row.body.length; }
-  const answer = await think(friendReview+profileInstructions,
-    {lines:lines.map((l,i)=>({source:i+1,date:shanghaiDate(l.made),text:l.body})),card:cardContext(await friendCard(scope,now)).facts},now,"activity",undefined,"friend_review");
-  if (!Array.isArray(answer?.profile)) throw Error(friendMemoryErrors.invalidReview);
-  return [...profileWrites(scope,answer.profile,lines),
-    stmt("UPDATE messages SET reviewed=1 WHERE id IN ("+lines.map(()=>"?").join(",")+")",...lines.map(l=>l.id))];
+  const [peers,overrides,avoid,epoch] = await Promise.all([relatedPeers(identity),currentOverrides(),avoidedTerms(scope),ruleVersion(scope)]);
+  const n=numbers.read(overrides), reviewProfile=first.reviewed===0;
+  const rows = await all<SourceLine & {offset:number}>("SELECT l.id,l.made,l.side,l.body,MAX(0,CAST(COALESCE(p.value,'0') AS INTEGER)) AS offset "+pendingFriendLetters+
+    " AND l.reviewed=? AND l.peer IN (SELECT value FROM json_each(?)) ORDER BY l.made,l.rowid LIMIT ?",
+    first.reviewed,JSON.stringify(peers),n.friendReviewCount);
+  if (!rows.length) return [];
+  const card = reviewProfile ? cardContext(await friendCard(scope,now)).facts : [];
+  const input = {reviewProfile,lessonLimit:n.sleepLessonCount,card:JSON.parse(modelContext(card,Math.floor(n.textContextChars/3))),
+    lines:[] as {source:number;date:string;text:string;continued?:boolean}[]};
+  const offsets=new Map<string,number>(), completed:string[]=[];
+  let room = n.textContextChars-JSON.stringify(input).length;
+  for (const row of rows) {
+    const line = {source:input.lines.length+1,date:shanghaiDate(row.made),text:row.body.slice(row.offset),continued:row.offset>0 || undefined};
+    const cost=JSON.stringify(line).length+1;
+    if (cost>room && input.lines.length) break;
+    // An unusually long letter can occupy several batches at a small configured budget.
+    // Six wire characters suffice for every JSON-escaped UTF-16 unit.
+    if (cost>room) {
+      line.text=line.text.slice(0,Math.floor((room-JSON.stringify({...line,text:""}).length-1)/6)).replace(/[\uD800-\uDBFF]$/u,"");
+      offsets.set("chat-in-"+row.id,row.offset+line.text.length);
+      input.lines.push(line);
+      break;
+    }
+    completed.push(row.id);
+    offsets.set("chat-in-"+row.id,-1);
+    input.lines.push(line);
+    room-=cost;
+  }
+  const answer=await think(friendReview+(reviewProfile?profileInstructions:""),input,now,"activity",undefined,"friend_review");
+  if (!Array.isArray(answer?.expressions) || (reviewProfile && !Array.isArray(answer.profile)))
+    throw Error(friendMemoryErrors.invalidReview);
+  if (await ruleVersion(scope)!==epoch) return [];
+  const lines=input.lines.map((line,i)=>({...rows[i],body:line.text}));
+  const samples=input.lines.map((line,i)=>({evidence:"chat-in-"+lines[i].id,kind:"private_message" as const,text:line.text}));
+  return [
+    stmt(`UPDATE resident SET revision=CASE WHEN (SELECT count(*) FROM memory_rules WHERE scope=?)=?
+      THEN revision ELSE NULL END WHERE id=?`,scope,epoch,residentId),
+    ...(reviewProfile ? profileWrites(scope,answer.profile,lines,n.friendReviewCount) : []),
+    ...styleWrites(scope,answer.expressions,samples,now,n.sleepLessonCount,avoid),
+    stmt("UPDATE messages SET reviewed=1 WHERE id IN (SELECT value FROM json_each(?))",JSON.stringify(completed)),
+    styleReviewProgress(offsets),
+  ];
 }
 
 // Old versions assigned every commitment a 24-hour deadline. Only the

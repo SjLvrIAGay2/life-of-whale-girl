@@ -12,6 +12,8 @@ import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { chatContacts, identityFor, inboxWhere, interactionContext, nextInbox, nextFriendPromise, readBurst, relatedPeers, type ChatContact } from "./conversation";
 import { chatContext, chatMemoryText, chatRecallCue, fitChatPrompt } from "./chat-context";
+import { chatExpressionGuide, readingStyleBatch, styleWrites } from "./expression-learning";
+import { modelContext } from "./model-context";
 import { z } from "zod";
 import {
   dayOf,
@@ -195,11 +197,11 @@ export function rankMemories(
       Math.min(overlap, n.keywordLimit) * n.keywordWeight + semanticScore +
       n.recencyWeight / (1 + age / n.recencyHours) +
       (m.kind === "promise" && !m.resolved ? n.promiseWeight : 0) +
-      (m.kind === "understanding" || m.kind === "style" ? 1 : 0)
+      (m.kind === "understanding" ? 1 : 0)
     );
   };
   const ranked= rows
-    .filter((m) => !m.hidden && (!m.expires || m.expires>now) && !["profile","habit_sample","source_quote"].includes(m.kind) && !(["promise","followup","occasion"].includes(m.kind) && m.resolved))
+    .filter((m) => !m.hidden && (!m.expires || m.expires>now) && !["profile","habit_sample","source_quote","style"].includes(m.kind) && !(["promise","followup","occasion"].includes(m.kind) && m.resolved))
     .map((m) => ({ m, v: score(m) }))
     .filter(({ v }) => v > 0)
     .sort((a, b) => b.v - a.v)
@@ -214,9 +216,10 @@ export function rankMemories(
   }
   return chosen;
 }
-export async function recall(scopes: string[], cue: string, now: number, excludeIds: string[] = [], relevantOnly = false, timeCue=cue) {
+export async function recall(scopes: string[], cue: string, now: number, excludeIds: string[] = [], relevantOnly = false, timeCue=cue, count?:number) {
   const placeholders = scopes.map(() => "?").join(",");
-  const sql = "SELECT * FROM memories WHERE hidden=0 AND (expires IS NULL OR expires>?) AND kind NOT IN ('profile','habit_sample','source_quote') AND scope IN (" + placeholders + ")" +
+  const candidateCount = Math.max(90,count ?? 0);
+  const sql = "SELECT * FROM memories WHERE hidden=0 AND (expires IS NULL OR expires>?) AND kind NOT IN ('profile','habit_sample','source_quote','style') AND scope IN (" + placeholders + ")" +
     (excludeIds.length ? " AND id NOT IN (SELECT value FROM json_each(?))" : "");
   const bindings = [now,...scopes,...(excludeIds.length?[JSON.stringify(excludeIds)]:[])];
   const anchor=timeCue.match(/(?:上次|那次)(.{2,18}?)(之前|以前|之后|以后|前|后)/);
@@ -242,15 +245,15 @@ export async function recall(scopes: string[], cue: string, now: number, exclude
     ),
   ).slice(0, 8);
   const [recent, older, pending, semantic] = await Promise.all([
-    all<Memory>(sql + " ORDER BY made DESC LIMIT 90", ...bindings),
+    all<Memory>(sql + " ORDER BY made DESC,rowid DESC LIMIT ?", ...bindings,candidateCount),
     cueTokens.length
       ? all<Memory>(
           sql +
             " AND (" +
             cueTokens.map(() => "instr(body,?)>0").join(" OR ") +
-            ") ORDER BY made DESC LIMIT 90",
+            ") ORDER BY made DESC,rowid DESC LIMIT ?",
           ...bindings,
-          ...cueTokens,
+          ...cueTokens,candidateCount,
         )
       : [],
     all<Memory>(
@@ -260,6 +263,7 @@ export async function recall(scopes: string[], cue: string, now: number, exclude
     semanticHits(scopes, cue, excludeIds).catch(() => []),
   ]);
   const n=numbers.read(await currentOverrides());
+  const limit=count ?? n.memoryCount;
   const ranked=rankMemories(
     [
       ...new Map(
@@ -268,9 +272,9 @@ export async function recall(scopes: string[], cue: string, now: number, exclude
     ],
     cue,
     now,
-    n.memoryCount, new Map(semantic.map(hit=>[hit.memory.id,hit.score])), relevantOnly, n,
+    limit, new Map(semantic.map(hit=>[hit.memory.id,hit.score])), relevantOnly, n,
   );
-  return [...new Map([...temporal,...ranked].map(m=>[m.id,m])).values()].slice(0,n.memoryCount);
+  return [...new Map([...temporal,...ranked].map(m=>[m.id,m])).values()].slice(0,limit);
 }
 export async function versions() {
   return all<Setting>(
@@ -516,18 +520,14 @@ async function perceive(t: Turn, q: ReadRequest, scope=privateScope) {
       item.body,
       ...(result.comments ?? []).map((c) => "评论 #" + c.id + " · " + c.text),
     ].filter(Boolean);
-    const body =
-      q.source +
-      " / " +
-      result.level +
-      " · " +
-      item.id +
-      "\n" +
-      passages.join("\n").slice(0, 3200);
+    const heading = `${q.source} / ${result.level} · ${item.id}\n`;
+    const passage = passages.join("\n");
+    const body = heading + (q.source==="heybox" && result.level==="article" ? passage : passage.slice(0,3200));
+    const fingerprint = result.comments?.length ? heading + passage : body;
     const id =
-      "seen-" + createHash("sha256").update(scope===privateScope?body:scope+"\n"+body).digest("hex").slice(0, 32);
+      "seen-" + createHash("sha256").update(scope===privateScope?fingerprint:scope+"\n"+fingerprint).digest("hex").slice(0, 32);
     if (!(await one("SELECT id FROM memories WHERE id=?", id))) {
-      const progress={page:result.resolved?.page??q.page??1,offset:q.offset??0,excerpt:clip(item.body,3200).slice(-120)};
+      const progress={page:result.resolved?.page??q.page??1,offset:q.offset??0,excerpt:clip(item.body,3200).slice(-120),comments:result.comments};
       remember(t, scope, "observation", body, { id, source: item.url,category:result.level,details:JSON.stringify(progress) });
     }
   }
@@ -1009,26 +1009,6 @@ function currentMood(s:State,now:number) {
   const f=s.feeling,remaining=Math.max(0,Math.min(1,(f.until-now)/(f.until-f.since)));
   return remaining?{label:f.label,cause:f.cause,strength:Math.round(f.strength*remaining*100)/100}:{label:texts.read(s.config).neutralMood,strength:0};
 }
-function commentSamples(rows: Memory[]) {
-  return rows.filter(m=>(m.scope==="public" || m.scope==="self") && m.kind==="observation" && m.body.startsWith("bili / filtered_comments ·")).flatMap(m=>
-    m.body.split("\n").flatMap(line=>{ const match=line.match(/^评论 #\d+ · (.+)$/); return match ? [{id:m.id,sample:match[1]}] : []; }),
-  );
-}
-async function chatExpressions() {
-  // Older style records can be used if their phrase is traceable to an approved comment.
-  const rows=await all<{body:string;quote:string|null;sample:string;details:string|null}>(`SELECT s.body,s.quote,s.details,m.body AS sample FROM memories s
-    JOIN json_each(s.evidence) e JOIN memories m ON m.id=e.value
-    WHERE s.scope='self' AND s.kind='style' AND m.scope IN ('public','self') AND m.kind='observation'
-      AND m.body LIKE 'bili / filtered_comments ·%' ORDER BY s.made DESC,s.rowid DESC LIMIT 40`);
-  const phrases=new Map<string,{phrase:string;use?:string;avoid?:string;own?:string}>();
-  for(const row of rows) {
-    const phrase=(row.quote || row.body).trim();
-    if(phrase.length>=2 && phrase.length<=80 && row.sample.split("\n").some(line=>
-      /^评论 #\d+ · /.test(line) && line.slice(line.indexOf(" · ")+3).includes(phrase))) phrases.set(phrase,{phrase,...JSON.parse(row.details||"{}")});
-    if(phrases.size===4) break;
-  }
-  return [...phrases.values()];
-}
 function observeBedroom(t:Turn) {
   const {state,now}=t;
   const due=Object.entries(state.alarms??{}).filter(([,at])=>at<=now).sort((a,b)=>a[1]-b[1]);
@@ -1099,58 +1079,43 @@ async function goToSleep(t: Turn, defs: Setting[], visibility:NonNullable<State[
     record(t,{kind:"sleep",description:"又眯了一会儿"},visibility);
     return true;
   }
-  const scope = privateScope,
-    own = await recall(
-      [siteScope, scope],
-      s.attention + " " + s.interests.join(" "),
-      t.now,
-    );
-  const evidence = [
-    ...own,
-    ...t.newMem.filter((x) => x.scope === scope || x.scope === siteScope),
-  ].slice(-numbers.read(t.state.config).dreamEvidenceCount);
-  const previous = await one<Memory>(
-    "SELECT * FROM memories WHERE scope='self' AND kind='dream' ORDER BY made DESC LIMIT 1",
-  );
-  const samples=commentSamples(await all<Memory>(
-    "SELECT * FROM memories WHERE scope IN ('public','self') AND kind='observation' AND body LIKE 'bili / filtered_comments ·%' ORDER BY made DESC LIMIT 6",
-  )).slice(0,24);
-  const result = await think(
-    sleepReview,
-    {
-      self: persona(defs),
-      preference: defs.find((x) => x.name === "reflection")?.value,
-      mood: s.mood,
-      oldInterests: s.interests,
-      records: remembered(evidence),
-      samples:samples.map(s=>s.sample),
-      previousDream: previous?.body,
-    },
-    t.now,
-    "activity",
-    undefined,"sleep_review",
-  ).catch(error => {
-    remember(t, scope, "access", "睡前整理暂缓。" + actionProblem(error));
-    return {};
-  });
-  const ids = evidence
-    .filter((m) => Array.isArray(result.ids) && result.ids.includes(m.id))
-    .map((m) => m.id);
+  const scope = privateScope, n = numbers.read(s.config);
+  const cue = s.attention + " " + s.interests.join(" ");
+  const [own, previous, batch] = await Promise.all([
+    recall([siteScope,scope],cue,t.now,[],false,cue,n.dreamEvidenceCount),
+    one<Memory>("SELECT * FROM memories WHERE scope='self' AND kind='dream' AND hidden=0 ORDER BY made DESC LIMIT 1"),
+    readingStyleBatch(n.sleepSampleCount,t.now),
+  ]);
+  const fresh = t.newMem.filter(m=>m.scope===scope || m.scope===siteScope);
+  const evidence = [...new Map([...fresh,...own].map(m=>[m.id,m])).values()].slice(0,n.dreamEvidenceCount);
+  const input = modelContext({
+    self: persona(defs), preference: defs.find(x=>x.name==="reflection")?.value,
+    mood:s.mood,oldInterests:s.interests,previousDream:previous?.body,lessonLimit:n.sleepLessonCount,
+    records:remembered(evidence),
+    samples:batch.samples.map(({kind,text,context},i)=>({source:i+1,kind,text,context})),
+  },n.textContextChars);
+  const result = await think(sleepReview,input,t.now,"activity",undefined,"sleep_review").catch(error=>{
+    remember(t,scope,"access","睡前整理暂缓。"+actionProblem(error));
+  }) ?? {};
+  // A reduced budget may have omitted whole records. Only acknowledge material actually sent.
+  const sent = JSON.parse(input) as {records?:{id:string}[];samples?:{source:number}[]};
+  const cited = (ids:unknown)=>(sent.records ?? []).filter(m=>Array.isArray(ids) && ids.includes(m.id)).map(m=>m.id);
   const sleepId = crypto.randomUUID();
-  const add = (kind: string, body: unknown) => {
-    if (clip(body))
-      remember(t, scope, kind, clip(body), {
-        id: sleepId + "-" + kind,
-        evidence: JSON.stringify(ids),
-      });
-  };
-  add("understanding", result.memory);
-  add("dream", result.dream);
-  const phrase=clip(result.expression,80);
-  const example=phrase.length>=2 && samples.find(s=>s.sample.includes(phrase));
-  if(example && !(await one("SELECT id FROM memories WHERE scope='self' AND kind='style' AND body=?",phrase))) {
-    remember(t,scope,"style",phrase,{quote:phrase,evidence:JSON.stringify([example.id]),
-      details:JSON.stringify({use:clip(result.use,100),avoid:clip(result.avoid,100),own:clip(result.own,80)})});
+  const insights = Array.isArray(result.insights) ? result.insights : [{memory:result.memory,ids:result.ids}];
+  const seen = new Set<string>();
+  for (const insight of insights) {
+    const body=clip(insight?.memory), ids=cited(insight?.ids);
+    if (!body || !ids.length || seen.has(body)) continue;
+    seen.add(body);
+    remember(t,scope,"understanding",body,{evidence:JSON.stringify(ids)});
+    if (seen.size>=n.sleepLessonCount) break;
+  }
+  if (clip(result.dream)) remember(t,scope,"dream",clip(result.dream),{id:sleepId+"-dream",evidence:JSON.stringify(cited(result.ids))});
+  if (Array.isArray(result.expressions)) {
+    const sources = new Set(sent.samples?.map(sample=>sample.source));
+    const presented = batch.samples.map((sample,i)=>sources.has(i+1) ? sample : undefined);
+    t.writes.push(...styleWrites(scope,result.expressions,presented,t.now,n.sleepLessonCount),
+      batch.advance(presented.filter(sample=>sample!==undefined)));
   }
   try { t.writes.push(...await reviewFriendBatch(t.now)); }
   catch(error) { remember(t,"self","access","好友记忆整理暂缓。"+actionProblem(error)); }
@@ -1264,8 +1229,8 @@ export async function respond(
   const activeInputs="SELECT count(*) AS n FROM messages WHERE id IN (SELECT value FROM json_each(?)) AND side='in' AND withheld=0 AND handled_at IS NULL";
   if(last && (await one<{n:number}>(activeInputs,inputIds))?.n!==inbox.length) return {status:"collecting"};
   const began=Date.now();
-  const [chat, card, expressions, owner,prefs,images,sharedMemory,works,avoid,interactions] = await Promise.all([
-    chatContext(peers, inbox,t.state,t.now), friendCard(scope,t.now), chatExpressions(),
+  const [chat, card, owner,prefs,images,sharedMemory,works,avoid,interactions] = await Promise.all([
+    chatContext(peers, inbox,t.state,t.now), friendCard(scope,t.now),
     one<{ value: string }>("SELECT value FROM channel_state WHERE id='owner-peer'"),
     contactPreferences(identity,t.now),turnImages(inbox),sharedEntries(scope,t.now),workList(scope),avoidedTerms(scope),interactionContext(inbox),
   ]);
@@ -1275,8 +1240,13 @@ export async function respond(
   if(lastAction?.ref && ["read","play","rest","sleep","draw","room","reflect","share"].includes(lastAction.action) && !await detailAllowed(lastAction.ref)) lastAction=undefined;
   const attention=ownScope(t.state.attentionScope) && (!t.state.attentionActivity || await detailAllowed(t.state.attentionActivity))?t.state.attention:undefined;
   const cue = last ? chatRecallCue(chat) : idea || attention || "";
-  const context = (await recall([scope, siteScope], cue, t.now, chat.recentMemoryIds, !!last,
-    last?chat.unread.map(part=>part.text||"").join("\n"):cue)).filter(m=>!mentionsAvoided(m.body,avoid));
+  const latest = last ? chat.unread.map(part=>part.text || "").join("\n") : cue;
+  const styleCue = [latest,...chat.unread.map(part=>part.quote?.text)].filter(Boolean).join("\n");
+  const [recalled,expressionGuide] = await Promise.all([
+    recall([scope,siteScope],cue,t.now,chat.recentMemoryIds,!!last,latest),
+    chatExpressionGuide(scope,peers,styleCue,cue,avoid,numbers.read(t.state.config)),
+  ]);
+  const context = recalled.filter(m=>!mentionsAvoided(m.body,avoid));
   const art=(await artForConversation(scope,peers,cue,context)).filter(a=>!mentionsAvoided(JSON.stringify(a),avoid));
   const shared = [...inbox].reverse().map(line => ({ line, link: sharedLink(line.body) })).find(item => item.link);
   let reading: Observation | undefined;
@@ -1307,8 +1277,7 @@ export async function respond(
   const inferenceStart=Date.now();
   const prompt = {
       intent: last ? "接话" : "主动",
-      friendCard:cardContext(card), expressions:expressions.filter(e=>!mentionsAvoided(e.phrase,avoid)).map(e=>e.phrase),
-      expressionGuide:expressions.filter(e=>!mentionsAvoided(JSON.stringify(e),avoid)),
+      friendCard:cardContext(card), expressionGuide,
       preferences:prefs,sharedMemories:sharedMemory.map(m=>({id:m.id,kind:m.kind,date:dayOf(m.made),topic:m.body,
         decisions:m.kind==="episode" && m.details?JSON.parse(m.details):undefined,due:m.due?shanghaiDate(m.due):undefined})),
       works:works.map(w=>({id:w.id,title:w.title,next:w.next,state:w.state,drawingState:w.drawingState,latest:w.steps[0]?.body.slice(0,240)})),

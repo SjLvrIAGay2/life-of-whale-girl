@@ -22,6 +22,7 @@ import { upgradeExperience } from "../lib/experience-migration";
 import { nextBell } from "../lib/sleep";
 import { qqToken, acceptQQ, deliverQQ, nextQQDelivery, recoverQQDeliveries } from "../lib/qq";
 import { nextFriendPromise, nextInbox } from "../lib/conversation";
+import { pendingFriendLetters } from "../lib/friend-memory";
 import { indexMemories } from "../lib/semantic-memory";
 import { runQQ } from "../scripts/qq-bridge.mjs";
 const exists = sqlite
@@ -377,7 +378,7 @@ async function loop() {
     const next = state.mode === "asleep" ? state.wakeAt : Math.min(state.nextAt,planDue);
     const inbox = await nextInbox(undefined,state.mode==="asleep");
     const delivery = await nextQQDelivery();
-    const sleepWork = state.mode==="asleep" && sqlite.prepare(`SELECT 1 WHERE EXISTS(SELECT 1 FROM messages WHERE reviewed=0 AND side='in' AND handled_at IS NOT NULL)
+    const sleepWork = state.mode==="asleep" && sqlite.prepare(`SELECT 1 WHERE EXISTS(SELECT 1 ${pendingFriendLetters})
       OR EXISTS(SELECT 1 FROM memories WHERE kind='promise' AND scope LIKE 'chat:%' AND topic IS NULL AND resolved=0)`).get();
     const promise = state.mode === "awake" && !inbox ? await nextFriendPromise() : null;
     // tick waits for the rest of an incoming turn before attempting other activity.
