@@ -33,7 +33,7 @@ export const residentNumbers = {
   promiseWeight: quantity(5, 0, 20, "未履约记忆的额外权重", false),
   similarMemoryRatio: quantity(0.78, 0.5, 1, "相似记忆去重的重叠率", false),
   discoveryHours: quantity(4, 1, 48, "桌上公开阅读推荐的刷新间隔（小时）"),
-  discoveryChoices: quantity(4, 1, 8, "桌面同时展示的每个阅读来源的候选数"),
+  discoveryChoices: quantity(20, 1, 20, "桌面同时展示的每个阅读来源的候选数"),
   discoveryRetryMinutes: quantity(20, 2, 180, "推荐加载失败后的重试间隔（分钟）"),
   discoveryMaxAgeHours: quantity(72, 1, 168, "桌上保留推荐条目的最长小时数"),
   discoveryPages: quantity(10, 1, 50, "推荐流循环浏览的页数"),
