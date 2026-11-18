@@ -7,6 +7,10 @@ import { isBiliAccountRead, type Observation, type ReadRequest } from "./media";
 import { reflectionActivities } from "./reflection";
 type Row = { id: string; made: number; until: number; visibility: Visibility; detail: string };
 type Turn = { state: State; now: number; writes: D1PreparedStatement[] };
+function insertActivity(id:string, made:number, until:number, visibility:Visibility, detail:Experience, readingTarget?:string) {
+  return stmt("INSERT INTO activities(id,made,until,visibility,detail) VALUES(?,?,?,?,?)",
+    id,made,until,visibility,JSON.stringify({detail,readingTarget}));
+}
 export function endActivity(t: Turn) {
   if (t.state.currentActivity)
     t.writes.push(
@@ -24,17 +28,16 @@ export function record(
   endActivity(t);
   t.state.currentActivity = id;
   t.state.activity = experienceLabel(detail,texts.read(t.state.config));
-  t.writes.push(
-    stmt(
-      "INSERT INTO activities(id,made,until,visibility,detail) VALUES(?,?,?,?,?)",
-      id,
-      t.now,
-      detail.kind==="reading" && detail.status && detail.status!=="ok" ? t.now : t.state.nextAt,
-      visibility ?? t.state.sharing ?? "detail",
-      JSON.stringify({ detail, readingTarget }),
-    ),
-  );
+  const until=detail.kind==="reading" && detail.status && detail.status!=="ok" ? t.now : t.state.nextAt;
+  t.writes.push(insertActivity(id,t.now,until,visibility??t.state.sharing??"detail",detail,readingTarget));
   return id;
+}
+
+// A successful read inside a cabin object contributes to personal progress. The object owns its public activity.
+export function recordObjectReading(t:Turn, request:ReadRequest, result:Observation) {
+  if (!request.id || result.status!=="ok" || !["open","subtitles","frames","comments"].includes(request.action)) return;
+  const detail=readExperience(request,result);
+  if (detail) t.writes.push(insertActivity(crypto.randomUUID(),t.now,t.now,"hidden",detail,request.id));
 }
 function partLink(url: string, part?: number) {
   if (!part || part < 2) return url;

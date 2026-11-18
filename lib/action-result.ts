@@ -49,7 +49,7 @@ export function readingBookmark(q: ReadRequest, observation: Observation, made?:
   const key = createHash("sha256").update(JSON.stringify([source, action, id, query, root, work])).digest("hex");
   return stmt("INSERT OR REPLACE INTO channel_state VALUES(?,?)", "reading-progress/" + key, JSON.stringify({
     source, action, id, query, root, page, offset, cursor, work, made,
-    level: observation.level, nextCursor: observation.nextCursor, nextPage: observation.nextPage, nextOffset:observation.nextOffset, atEnd:observation.atEnd, coverage:observation.coverage,
+    status: observation.status, level: observation.level, nextCursor: observation.nextCursor, nextPage: observation.nextPage, nextOffset:observation.nextOffset, atEnd:observation.atEnd, coverage:observation.coverage,
     items: observation.items.slice(0,5).map(item => ({id:item.id, title:item.title.slice(0,100), playback:item.playback})),
   }));
 }
@@ -116,7 +116,7 @@ export async function recoverLastAction(state: State) {
     ORDER BY a.made DESC,a.rowid DESC LIMIT 12`);
   for (const position of positions.reverse()) {
     const read: Reading = JSON.parse(position.detail).detail;
-    if (read.source==="bili" || read.source==="heybox") writes.push(readingBookmark(oldReading(read),{status:"ok",level:read.level,items:read.items},position.made,position.work??undefined));
+    if (read.source==="bili" || read.source==="heybox") writes.push(readingBookmark(oldReading(read),{status:read.status??"ok",level:read.level,items:read.items},position.made,position.work??undefined));
   }
   if (isOldObservation(legacy) && legacy.status === "ok") {
     if (legacy.level === "history" || legacy.level === "watch_later")

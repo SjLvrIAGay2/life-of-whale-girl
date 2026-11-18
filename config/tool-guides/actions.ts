@@ -12,8 +12,10 @@ export const activityHelp = {
   read: [
     '找内容时，用 browse 看推荐，或用 search 搜关键词。比如在小黑盒搜推箱子，可以发 {"action":"read","media":{"source":"heybox","action":"search","query":"推箱子"}}。',
     "从结果中选一个 id，把 media.action 改成 open 并填入 id。小黑盒打开的是正文。哔哩哔哩选 source=bili，用 BV 或 ep 编号打开简介，subtitles 读字幕，frames 看分镜。两处都能用 comments 读评论，root 选某一楼的回复。",
+    "自由阅读时，省略位置会从自己的进度接着看。想回看时，字幕、分镜和小黑盒正文指定 offset（0 是开头），主评论指定 page（1 是首页）。",
     "续读时将 nextPage 或 nextOffset 填入 page 或 offset。B 站视频的 page 选分 P，在评论中选评论页。私人列表用 history 或 watch_later。观看历史的 nextCursor 原样填入 cursor。accountPlayback 是账号播放进度，自己的阅读进度在 readingProgress。想把这次阅读归入作品可带 work.id。",
   ].join("\n"),
+  change_titles: '从 desk.change 选来源可以换一批。只想略过一个标题时可发 {"action":"change_titles","target":{"source":"bili","id":"桌上条目的编号"}}。换标题后的候选在下轮 desk.titles 里。',
   play: "play 填 game。开始用 op=start，续玩用存档 id，op 选 look、move、pause、resume、restart、next。落子或移动填 move，可加 note 留批注。",
   draw: "idea 填画意，reference 可选参考图，续画用 name 填原作品编号。",
   chat: "contact 填 contacts 里的别名或本轮序号，idea 写想聊的事。是否联系由你决定。",
