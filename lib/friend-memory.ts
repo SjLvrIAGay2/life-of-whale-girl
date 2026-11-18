@@ -9,6 +9,8 @@ import { avoidedTerms, ruleVersion } from "./memory-control";
 import { modelContext } from "./model-context";
 import { identityFor, relatedPeers } from "./conversation";
 import { think } from "./model";
+import { shanghaiDate } from "./chat-timing";
+export { shanghaiDate };
 
 const text = (v: unknown, length: number) => typeof v === "string" ? v.trim().slice(0,length) : "";
 export type SourceLine = Pick<ChatLine,"id"|"made"|"body"|"side"> & {peer?:string};
@@ -49,10 +51,6 @@ export async function visibleFriendCard(identity:string,offset=0,limit=64) {
     art:pictures.filter(p=>evidence(m).includes(p.ref)).map(({id,title})=>({id,title})),
     sources:evidence(m).flatMap(id=>{ const s=sourceMap.get(id);return s?[{side:s.side,body:s.body,made:s.made}]:[]; })}));
 }
-export function shanghaiDate(ms:number) {
-  return new Date(ms+numbers.defaults.shanghaiOffsetMs).toISOString().slice(0,16);
-}
-
 export function profileWrites(scope: string, raw: unknown, lines: SourceLine[], limit=16) {
   const writes: D1PreparedStatement[] = [];
   if (!Array.isArray(raw)) return writes;

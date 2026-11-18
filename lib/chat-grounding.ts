@@ -1,9 +1,85 @@
-import { formatText } from "../config/options";
-import { grounding } from "../config/texts/grounding";
+import { z } from "zod";
+import { formatText } from "../config/options.ts";
+import { modelErrors } from "../config/texts/errors.ts";
+import { grounding } from "../config/texts/grounding.ts";
+import type { ChatPart } from "./chat-context";
 type Part={text?:string};
 type Turn={speaker?:string;messages?:Part[]};
 type ChatFacts={intent?:string;unread?:Part[];recent?:Turn[];context?:{speaker?:string;text?:string}[];works?:{id:string;title:string;drawingState?:string}[];
   friendCard?:{facts?:{topic?:string;value?:string}[]}};
+
+type DraftClause = {id:number;text:string};
+const timingReview=z.object({omit:z.array(z.number().int().positive())});
+// These direct claims have no support when every incoming line predates a completed sleep.
+const presentFriend=/^(?:原来|看来|不过|所以|倒是|那|诶|唔|\s)*(?:主人|你|您)(?:是|自己|那边|这会儿?|现在|这个点|怎么|也|居然|竟然|都)*(还醒着|还没睡|还没休息|刚醒(?:过来)?)[了呀吗啦啊吧呢嘛么～~，,。！？!?\s]*$/u;
+const selfReport=/(?:^|[，,。！？!?\n])\s*我(?:自己|现在|这会儿?|也|才|今天|凌晨|[零一二两三四五六七八九十\d]+点)*(还醒着|还没睡|还没休息|刚醒(?:过来)?)[了呀啦啊～~\s]*(?=[，,。！!\n]|$)/u;
+const sameQuestion=/^还是(?:你|主人|自己|也|才)*(?:刚醒(?:过来)?|还醒着|没睡)[了呀吗啦啊吧呢嘛么～~，,。！？!?\s]*$/u;
+const presentAction=/^(?:不过|所以|倒是|那|你|您|主人|怎么)*(?:这个点|这时候|这会儿?|现在|刚刚)(?:怎么|居然|竟然|还|又|才|来|过来)*(?:戳我|拍我|敲我|叫我|给我发(?:来)?消息)/u;
+const wokeMe=/^[（(]?(?:主人[，,]?|我|刚才|刚刚|一下子|竟然|真的|是)*被(?:你|主人|这|那|一|下|给|轻轻|这么|一下子)*(?:戳|叫|拍|喊|摇|吵|弄|推)(?:得[^，,。！？!?）)]{0,12})?醒/u;
+const timingWords=/[醒睡困熬戳时点刻夜晨早晚]|起床|休息|惊动|打扰|叫我|拍我|找我|发来|发的|消息|留言|在线|上班|下班|收工|等我|现在|刚刚|这会|天亮|天黑|\d[:：]\d/u;
+const pastFrame=/当时|那时|那会儿?|昨晚|昨天|来信时|留言时|的时候/u;
+const timeLead=/^(?:不过|可是|但)?(?:这会儿?|这|现在)(?:都|已经|才|是)*(?:半夜|深夜|凌晨|午夜|[零一二三四五六七八九十\d]+点)(?:多|了|啦)*[，,]$/u;
+const friendAtClock=/^(?:主人|你|您)(?:是|在|今天|凌晨|早上|上午|下午|晚上|夜里)*(\d{1,2}|[零一二两三四五六七八九十]{1,3})(?:[:：]\d\d|点(?:[零一二三四五六七八九十\d]+分?|钟|半|多)?)(?:才|还|又|就|来|给我)*(?:戳我|拍我|发(?:来|了|的)?(?:这条|那条|消息|留言))/u;
+const hours="零 一 二 三 四 五 六 七 八 九 十 十一 十二 十三 十四 十五 十六 十七 十八 十九 二十 二十一 二十二 二十三".split(" ");
+
+function attributesReadHour(text:string,unread:ChatPart[]) {
+  const clock=friendAtClock.exec(text)?.[1];
+  if (!clock) return false;
+  const hour=/^\d+$/u.test(clock)?Number(clock):hours.indexOf(clock.replace("两","二"));
+  if (hour<0 || hour>23) return false;
+  // A bare “四点” can mean either 04:00 or 16:00. Only reject an unambiguous mismatch.
+  const matches=(stamp?:string)=>stamp!==undefined && Number(stamp.slice(11,13))%12===hour%12;
+  return unread.some(part=>matches(part.timing?.readAt)) && !unread.some(part=>matches(part.timing?.receivedAt));
+}
+
+export async function reviewSleepReply(
+  unread:ChatPart[], result:any, review:(input:{unread:ChatPart[];bubbles:DraftClause[][]})=>Promise<unknown>,
+) {
+  if (result?.decision==="silent" || !unread.some(part=>part.timing?.afterSleep)) return result;
+  const multipart=Array.isArray(result?.messages);
+  const bubbles:string[]=(multipart?result.messages:[result?.text]).filter((s:unknown)=>typeof s==="string" && s.trim());
+  if (!bubbles.length) return result;
+  let count=0;
+  const groups=bubbles.map(bubble=>{
+    // Keep a stage direction separate from the dialogue that follows it.
+    const clauses=bubble.match(/[（(][^）)\n]*[）)]|[^（(，,。！？!?；;\n]+[，,。！？!?；;\n]*|[\s\S]/gu)??[bubble];
+    return clauses.map(text=>({id:++count,text}));
+  });
+  const checked=timingReview.safeParse(await review({unread,bubbles:groups}));
+  if (!checked.success || checked.data.omit.some(id=>id>count)) throw Error(modelErrors.invalidResponse);
+  const flagged=new Set(checked.data.omit);
+  const currentReports=new Set(unread.filter(part=>part.timing?.delayMinutes===0 && !part.timing.afterSleep)
+    .map(part=>selfReport.exec(part.text??"")?.[1]).filter(Boolean));
+  const omit=new Set<number>();
+  const allLate=unread.every(part=>part.timing?.afterSleep);
+  for (const group of groups) {
+    for (const [index,clause] of group.entries()) {
+      const text=clause.text.trim(),previous=group[index-1]?.text??"";
+      const friendState=presentFriend.exec(text)?.[1];
+      if (friendState && currentReports.has(friendState)) continue;
+      if (flagged.has(clause.id) && timingWords.test(text)) omit.add(clause.id);
+      if ((/[，,]$/u.test(previous) && pastFrame.test(previous)) || /的话|也(?:可以|行)|下次/u.test(text)) continue;
+      const optionAboutFriend=sameQuestion.test(text) && (presentFriend.test(previous.trim()) || presentAction.test(previous.trim()));
+      if (allLate && (friendState || optionAboutFriend)) omit.add(clause.id);
+      // A newer “I'm awake” does not make an earlier poke contemporaneous.
+      const gesture=text.match(/[戳拍敲摇]/u)?.[0];
+      const matching=gesture?unread.filter(part=>part.text?.includes(gesture)):[];
+      const sources=matching.length?matching:unread;
+      if (sources.every(part=>part.timing?.afterSleep) && (presentAction.test(text) || wokeMe.test(text) || attributesReadHour(text,sources)))
+        omit.add(clause.id);
+    }
+  }
+  if (!omit.size) return result;
+  const corrected=groups.map((group,i)=>{
+    if (!group.some(c=>omit.has(c.id))) return bubbles[i];
+    const kept=group.filter(c=>!omit.has(c.id));
+    const last=kept.at(-1);
+    if (last && last!==group.at(-1) && timeLead.test(last.text.trim())) kept.pop();
+    return kept.map(c=>c.text).join("").trim().replace(/[，,；;]+$/u,"。");
+  }).filter(Boolean);
+  if (!corrected.length) corrected.push(allLate?grounding.lateReceipt:grounding.receipt);
+  return {...result,...(multipart?{messages:corrected}:{text:corrected[0]}),grounding:"message_timing"};
+}
 
 // Only the friend's own statements and scoped facts can establish what they said.
 export function groundFriendReply(turn:ChatFacts,result:any) {

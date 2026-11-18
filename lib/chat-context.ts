@@ -3,7 +3,7 @@ import { all, type ChatLine } from "../db";
 import type { State } from "../content/initial";
 import { communitySticker } from "./community-art";
 import { deliveredChatLine } from "./conversation";
-import { shanghaiDate } from "./friend-memory";
+import { messageTiming, shanghaiDate, type SleepInterval } from "./chat-timing";
 
 const speaker = (side: ChatLine["side"]) => side === "in" ? "好友" : "鲸鱼娘";
 const channel = (peer: string) => peer.startsWith("qq-") ? "QQ" : "站内私信";
@@ -48,13 +48,13 @@ async function quotedMessages(lines: ChatLine[]) {
   return quotes;
 }
 
-type ChatPart = {
+export type ChatPart = {
   text?: string;
   images?: number;
   voice?: true;
   sticker?: string;
   quote?: Quotation;
-  timing?: {receivedAt:string;readAt:string;delayMinutes:number;receivedMode:string};
+  timing?: ReturnType<typeof messageTiming>;
 };
 function chatPart(line: ChatLine, quotes: Map<string, Quotation>, limit: number): ChatPart {
   return {
@@ -82,8 +82,11 @@ async function messageTimings(lines:ChatLine[],state:State,now:number) {
       LEFT JOIN channel_state interaction ON interaction.id='interaction/'||m.id
       WHERE m.id IN (SELECT value FROM json_each(?))`,JSON.stringify(incoming.map(line=>line.id))),
     // A completed interval is evidence even when the message predates the recent-sleep window.
-    all<{made:number;until:number}>(`SELECT made,until FROM activities WHERE made<=? AND until>? AND until<=?
-      AND json_extract(detail,'$.detail.kind')='sleep'`,
+    all<SleepInterval>(`SELECT a.made,a.until,
+      (SELECT category FROM memories WHERE scope='public' AND kind='event' AND hidden=0 AND made=a.until
+        AND category IN ('natural_wake','alarm_wake') AND a.visibility='detail' AND ? LIMIT 1) AS wakeCause
+      FROM activities a WHERE a.made<=? AND a.until>? AND a.until<=?
+      AND json_extract(a.detail,'$.detail.kind')='sleep'`, (state.sharing??"detail")==="detail"?1:0,
       Math.max(...incoming.map(line=>line.made)),Math.min(...incoming.map(line=>line.made)),now),
   ]);
   if(state.sleepAt>0 && state.sleepAt<=now) {
@@ -91,17 +94,7 @@ async function messageTimings(lines:ChatLine[],state:State,now:number) {
     if(until>state.sleepAt && (state.mode==="asleep" || until<=now)) sleeps.push({made:state.sleepAt,until});
   }
   const modes=new Map(receipts.map(row=>[row.id,row.value?JSON.parse(row.value).receivedMode:"unknown"]));
-  for(const line of incoming) {
-    const readAt=line.handled_at??now;
-    const asleep=sleeps.some(sleep=>sleep.made<=line.made && line.made<sleep.until);
-    // The clock may commit a due natural wake just after the gateway saved its receipt.
-    const afterWake=state.mode==="awake" && state.wokeAt!==undefined && state.wokeAt<=line.made && line.made<=now;
-    timings.set(line.id,{
-      receivedAt:shanghaiDate(line.made),readAt:shanghaiDate(readAt),
-      delayMinutes:Math.floor(Math.max(0,readAt-line.made)/60000),
-      receivedMode:asleep?"asleep":afterWake?"awake":modes.get(line.id)??"unknown",
-    });
-  }
+  for (const line of incoming) timings.set(line.id,messageTiming(line,state,now,modes.get(line.id),sleeps));
   return timings;
 }
 

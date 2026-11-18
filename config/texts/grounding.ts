@@ -1,5 +1,7 @@
 // Factual corrections and cross-conversation privacy replies are operator-owned.
 export const grounding = {
+  lateReceipt: "我睡醒才看到你之前的留言～",
+  receipt: "我看到你的消息啦。",
   queued: "《{title}》已经排上了，还没动笔。",
   drawing: "《{title}》还在画，等有了成图再给你看。",
   failed: "《{title}》这次没画成，暂时还没有成图。",

@@ -1,1 +1,1 @@
-export { chatInstructions } from "../config/prompts/chat";
+export { chatInstructions, chatTimingReview } from "../config/prompts/chat";

@@ -31,7 +31,7 @@ export async function think(
     instruction,
     data,
     key,
-    model,image,receipt,undefined,task==="persona_replay"?"replay":priority==="chat",n,
+    model,image,receipt,undefined,task==="persona_replay"?"replay":priority==="chat" && task!=="chat_timing_review",n,
     task==="sleep_review" || task==="friend_review" ? n.sleepReviewTokens : n.modelTokens,
   )).catch(async error => {
     if (counted) await discardModelCall(now);

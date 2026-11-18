@@ -6,7 +6,8 @@ import { texts } from "../config/texts";
 import { drawingReview, storyboard, sleepReview, journal } from "../config/prompts/tasks";
 import { numbers } from "../config/numbers";
 import { configure, configCommand } from "./configuration";
-import { chatInstructions } from "./chat-instructions";
+import { chatInstructions, chatTimingReview } from "./chat-instructions";
+import { reviewSleepReply } from "./chat-grounding";
 import { activityHelp, activityInstructions } from "./activity-instructions";
 import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
@@ -1340,6 +1341,8 @@ export async function respond(
       images.length?images.map(i=>i.url):undefined,"chat_read_reply");
     delete response.action;
   }
+  response=await reviewSleepReply(chat.unread,response,input=>
+    think(chatTimingReview,JSON.stringify(input),t.now,"chat",undefined,"chat_timing_review"));
   if(await ruleVersion(scope)!==epoch) return {status:"collecting"};
   if(!last && !(await chatContacts(t.now+Math.max(0,Date.now()-began),reminder?identity:undefined)).some(c=>c.identity===identity && c.peer===peer))
     return {status:"deferred"};

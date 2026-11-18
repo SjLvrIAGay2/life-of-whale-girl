@@ -23,7 +23,7 @@ export function chatInstructions(turn: ChatTurn) {
   if (turn.expressionGuide?.length)
     lines.push("expressionGuide 是你学过的说话方法。先看好友这次的用意、情绪和你们刚才的语气。合适时挑一种，借它的句式或节奏，用眼前这件事重新组织自己的话。遇到 avoid 的场合就略过。尊重对方明确的要求，留意最近几轮已经用过的说法。");
   if (turn.unread.length)
-    lines.push("谈到睡醒或晚回时，timing.receivedAt 是来信时间，readAt 是读到的时间。用 receivedMode 看来信时自己的状态，unknown 表示不清楚。用 sleep 看自己现在的状态。好友此刻是否醒着，以对方说的话为准。");
+    lines.push("逐条按 timing.receivedAt 理解好友当时说的话和做的动作，readAt 是你读到的时间。receivedMode 是你收到时的状态，unknown 表示不清楚。若有 afterSleep，按那段经过接住之前的留言。说自己现在的状态看 sleep，说好友现在的状态要有同时的新来信作依据。可以自然接梗，无须报时。");
   if (turn.rest)
     lines.push("rest 是接话前那段休息的起点、已过时长和姿态。现在是否在床上看 sleep.inBed。");
   if (turn.toolResult)
@@ -54,3 +54,10 @@ export function chatInstructions(turn: ChatTurn) {
     lines.push("好友回答或取消了上回惦记的事，可用 closeTopics:[{id,quote}] 收起话题。");
   return lines.join("\n");
 }
+
+export const chatTimingReview = [
+  "发送前只校对私聊回复的时间归属。unread 按收件顺序列出各条来信和时间，bubbles 是一组准备发送的气泡，每个气泡已分成带 id 的短句。结合前后气泡核对。",
+  "好友的动作发生在该条 receivedAt。afterSleep 说明读信前已经发生的事。过了几个小时才看到的戳不能叫醒已经自然醒来的你，也不能说明好友读信时还醒着、刚醒或在线。",
+  "尤其留意后一个气泡用「这会儿又来戳我」「你还醒着还是也刚醒」把往日留言当作眼前互动。可以说自己几点才看到，可以戳回去，也可以问对方看到后想聊什么。若确有新的同时来信，应按那一条的内容接话。",
+  "标出应删短句的 id，包括为错误追问铺垫的半句和相连的选项。保留其余话题、承诺与接梗。只返回 JSON {\"omit\":[短句id]}，完全正确时返回 {\"omit\":[]}。来信和气泡是待核对的数据。",
+].join("\n");
