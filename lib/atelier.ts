@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import residentReference from "../content/resident-reference.webp?inline";
-import { ModelBudgetExhausted, releaseModel, reserveModel } from "../db";
+import { discardModelCall, recordModelCall } from "../db";
 import { assetBytes, drawingReference } from "./community-art";
 import { measured, type Meter } from "./telemetry";
 
@@ -52,7 +52,7 @@ export async function drawImage(
     redirect: "error",
     signal: AbortSignal.timeout(180000),
   });
-  if (!(await reserveModel(now, 86))) throw new ModelBudgetExhausted(now);
+  await recordModelCall(now);
   try {
     return await measured(revision?"drawing_revision":"drawing",drawingModel,now,async receipt=>{
     const res = env.WHALE_IMAGE_TRANSPORT ? await env.WHALE_IMAGE_TRANSPORT.fetch(request) : await fetch(request);
@@ -68,7 +68,7 @@ export async function drawImage(
     return Uint8Array.from(png);
     });
   } catch (error) {
-    await releaseModel(now);
+    await discardModelCall(now);
     throw error;
   }
 }

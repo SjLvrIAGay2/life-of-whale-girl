@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { ModelBudgetExhausted, releaseModel, reserveModel } from "../db";
+import { discardModelCall, recordModelCall } from "../db";
 import { measured, type Meter } from "./telemetry";
 import { groundFriendReply } from "./chat-grounding";
 import { modelContext } from "./model-context";
@@ -17,10 +17,9 @@ export async function think(
 ) {
   const key=env.WHALE_DEEPSEEK_API_KEY;
   if (!key) throw Error("未配置角色模型");
-  // Autonomous activities and journal entries share a budget. Conversation usage is metered separately.
-  const budgeted = priority !== "chat";
-  if (budgeted && !(await reserveModel(now, priority === "journal" ? 95 : 86)))
-    throw new ModelBudgetExhausted(now);
+  // Count autonomous usage without a daily cap. Conversation is metered separately.
+  const counted = priority !== "chat";
+  if (counted) await recordModelCall(now);
   const model=image ? "deepseek-flash" : env.WHALE_MODEL || "deepseek-flash";
   return measured(task,model,now,receipt=>generate(
     instruction,
@@ -28,7 +27,7 @@ export async function think(
     key,
     model,image,receipt,undefined,task==="persona_replay"?"replay":priority==="chat",
   )).catch(async error => {
-    if (budgeted) await releaseModel(now);
+    if (counted) await discardModelCall(now);
     throw error;
   });
 }

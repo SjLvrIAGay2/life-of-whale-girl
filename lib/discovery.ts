@@ -9,7 +9,7 @@ type Feed = {checked:number; fetched:number; page:number; status:string; items:T
 const hour = 3600000;
 
 // This is a small public display. Fetching its labels never enters the resident's
-// history, model budget, reading bookmarks or public stream of activities.
+// history, model usage, reading bookmarks or public stream of activities.
 async function displayTitles(source:Source, now:number) {
   const key="discovery/"+source;
   const saved=await one<{value:string}>("SELECT value FROM channel_state WHERE id=?",key);

@@ -189,27 +189,18 @@ export async function unlock(token: string) {
     token,
   ).run();
 }
-export async function reserveModel(now: number, limit: number) {
+// Keep daily usage for diagnostics; it never controls whether an activity can run.
+export async function recordModelCall(now: number) {
   const d = dayOf(now);
-  const r = await stmt(
-    "UPDATE resident SET calls=CASE WHEN budget_day=? THEN calls+1 ELSE 1 END,budget_day=? WHERE id=? AND (budget_day<>? OR calls<?)",
+  await stmt(
+    "UPDATE resident SET calls=CASE WHEN budget_day=? THEN calls+1 ELSE 1 END,budget_day=? WHERE id=?",
     d,
     d,
     residentId,
-    d,
-    limit,
   ).run();
-  return r.meta.changes > 0;
 }
-export async function releaseModel(now: number) {
+export async function discardModelCall(now: number) {
   await stmt("UPDATE resident SET calls=MAX(calls-1,0) WHERE id=? AND budget_day=?", residentId, dayOf(now)).run();
-}
-export class ModelBudgetExhausted extends Error {
-  readonly retryAt: number;
-  constructor(now: number) {
-    super("今日思考额度已满");
-    this.retryAt = Date.parse(dayOf(now) + "T00:00:00+08:00") + 86400000;
-  }
 }
 // All mutations in a turn, including memories and public posts, are fenced by the lease.
 export async function commit(

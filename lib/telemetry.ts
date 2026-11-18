@@ -3,6 +3,15 @@ import { dayOf } from "../content/initial";
 import { failureReason } from "./diagnostics";
 import type { State } from "../content/initial";
 
+export function workInputTrace(value:unknown) {
+  const raw=value && typeof value==="object" ? value as Record<string,unknown> : {};
+  const result:Record<string,string|number>={};
+  for (const key of ["action","id","title","kind","evidence","query","offset"])
+    if (typeof raw[key]==="string") result[key]=raw[key].slice(0,180);
+    else if (typeof raw[key]==="number") result[key]=raw[key];
+  return result;
+}
+
 // Private, bounded diagnostics keep chosen timing and targets next to their actual receipts.
 // Arbitrary tool arguments and conversation messages are deliberately excluded.
 export function activityTrace(now:number, choice:unknown, state:State) {
@@ -12,6 +21,7 @@ export function activityTrace(now:number, choice:unknown, state:State) {
     if (typeof raw[key]==="string") requested[key]=raw[key].slice(0,600);
     else if (typeof raw[key]==="number" || raw[key]===null) requested[key]=raw[key];
   if (raw.question===null) requested.question=null;
+  if (raw.work!==undefined) requested.work=workInputTrace(raw.work);
   const result=state.lastResult as {field?:string;rest?:unknown}|undefined;
   return [stmt("INSERT INTO channel_state(id,value) VALUES(?,?)",
     "activity-decision/"+String(now).padStart(16,"0")+"/"+crypto.randomUUID(),
@@ -40,7 +50,7 @@ export function trace(scope:string,now:number,status:string,details:Record<strin
 }
 export async function diagnostics(now=Date.now()) {
   const since=Date.parse(dayOf(now)+"T00:00:00+08:00");
-  const [turns,metrics,budget,jobs,health]=await Promise.all([
+  const [turns,metrics,usage,jobs,health]=await Promise.all([
     all<{id:string;made:number;status:string;details:string;receipts:string;deliveryStats:string}>(`SELECT t.id,t.made,t.status,t.details,
       (SELECT group_concat(COALESCE(d.state,'queued'),',') FROM messages m LEFT JOIN deliveries d ON d.id=m.id
         WHERE m.batch_id=t.id AND m.side='out' AND (m.peer LIKE 'qq-%' OR d.id IS NOT NULL)) AS receipts,
@@ -51,5 +61,5 @@ export async function diagnostics(now=Date.now()) {
     all("SELECT id,state,attempts,made,due,detail FROM art_jobs ORDER BY made DESC LIMIT 16"),
     all<{id:string;value:string}>("SELECT id,value FROM channel_state WHERE id LIKE 'health/%' OR id IN ('qq-ready','clock-health','bridge-health')"),
   ]);
-  return {turns:turns.map(t=>({...t,details:JSON.parse(t.details),deliveryStats:JSON.parse(t.deliveryStats)})),metrics,budget:budget?.calls??0,limit:95,jobs,health};
+  return {turns:turns.map(t=>({...t,details:JSON.parse(t.details),deliveryStats:JSON.parse(t.deliveryStats)})),metrics,budget:usage?.calls??0,limit:null,jobs,health};
 }

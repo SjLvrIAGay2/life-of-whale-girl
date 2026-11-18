@@ -103,8 +103,12 @@ export function workStep(work:string,scope:string,now:number,body:string,source:
     id,now,short(body,1800),source.evidence??null,source.art??null,source.url??null,source.level??null,work,scope,
     source.evidence??null,source.evidence??null,scope,source.art??null,source.art??null,scope);
 }
-function skippedWork(summary:string, ref?:string) {
-  return {writes:[], status:"skipped" as const, summary, ref};
+type WorkInputField = "work.action" | "work.title" | "work.id";
+export class WorkInputError extends Error {
+  constructor(readonly field:WorkInputField, message:string) { super(message); }
+}
+function skippedWork(summary:string, ref?:string, field?:WorkInputField) {
+  return {writes:[], status:"skipped" as const, summary, ref, field};
 }
 function manuscriptStep(work:Pick<Work,"id"|"scope"|"title">,draft:string,finished:boolean,now:number,origins:string[]) {
   const version=memory({scope:work.scope,kind:"manuscript",topic:work.title,evidence:JSON.stringify(origins),
@@ -113,11 +117,11 @@ function manuscriptStep(work:Pick<Work,"id"|"scope"|"title">,draft:string,finish
 }
 
 export async function prepareWorkEdit(scope:string, raw:any, now:number, newEvidence:Memory[]=[], origins:string[]=[]) {
-  if(!raw || typeof raw.action!=="string") return skippedWork("没有收到要做的作品操作（work.action）。");
+  if(!raw || typeof raw.action!=="string") return skippedWork("work.action 还没有填写。可选 start、advance、finish、shelve、resume 或 browse，具体写法在 workHelp。",undefined,"work.action");
   const title=short(raw.title,100), next=short(raw.next,240);
   const draft=short(raw.draft,1800);
   if(raw.action==="start") {
-    if(!title) return skippedWork("新作品缺少标题（work.title）。");
+    if(!title) return skippedWork("新作品缺少标题（work.title）。",undefined,"work.title");
     const request=typeof raw.request==="string" && /^[a-f0-9-]{36}$/i.test(raw.request)?raw.request:"";
     const work=newWork(scope,title,["reading","drawing","writing"].includes(raw.kind)?raw.kind:"writing",next,now,
       request?scope+"/work/"+request:undefined);
@@ -132,11 +136,11 @@ export async function prepareWorkEdit(scope:string, raw:any, now:number, newEvid
     if(firstDraft) writes.push(...firstDraft.writes);
     return {writes,status:"started" as const,ref:work.id,manuscript:firstDraft?.id,summary:"新建了作品《"+title+"》"+(firstDraft?"并保存了第一稿。":"。")};
   }
-  if(!["advance","finish","shelve","resume"].includes(raw.action)) return skippedWork("无法识别这个作品操作（work.action）。");
+  if(!["advance","finish","shelve","resume"].includes(raw.action)) return skippedWork("work.action 无法识别。可选 start、advance、finish、shelve、resume 或 browse，具体写法在 workHelp。",undefined,"work.action");
   const id=short(raw.id,100);
-  if(!id) return skippedWork("没有给出要修改的作品编号（work.id）。");
+  if(!id) return skippedWork("没有给出要修改的作品编号（work.id）。",undefined,"work.id");
   const work=await one<Work>("SELECT * FROM works WHERE scope=? AND id=? AND state<>'hidden'",scope,id);
-  if(!work) return skippedWork("在这里找不到与这个编号对应的作品（work.id）。");
+  if(!work) return skippedWork("在这里找不到与这个编号对应的作品（work.id）。",undefined,"work.id");
   if((raw.action==="advance" || raw.action==="finish") && work.state!=="active")
     return skippedWork("《"+work.title+"》"+(work.state==="shelved"?"已搁置":"已结束")+"，本次没有添加进度。",id);
   const writes=[];

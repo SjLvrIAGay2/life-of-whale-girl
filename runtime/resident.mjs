@@ -8,7 +8,7 @@ import { dirname,join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GET, POST } from "../app/api/v1/life/[operation]/route";
 import { GET as picture } from "../app/picture/[id]/route";
-import { all, one, stmt, house, publicHome, tickLock, unlock, commit, ModelBudgetExhausted } from "../db";
+import { all, one, stmt, house, publicHome, tickLock, unlock, commit } from "../db";
 import { safeOrigin, same } from "../lib/security";
 import { activityArchive,legacyReading } from "../lib/activities";
 import { visibleWorkSteps } from "../lib/works";
@@ -370,7 +370,7 @@ async function loop() {
     const outcome = await selfTurn(),
       now = Date.now(),
       { state } = await house();
-    const planDue=state.mode==="awake" && !(state.budgetRetryAt>now) ? await nextPersonalPlan() : Infinity;
+    const planDue=state.mode==="awake" ? await nextPersonalPlan() : Infinity;
     const next = state.mode === "asleep" ? state.wakeAt : Math.min(state.nextAt,planDue);
     const inbox = await nextInbox(undefined,state.mode==="asleep");
     const delivery = await nextQQDelivery();
@@ -383,12 +383,6 @@ async function loop() {
     delay = outcome.status === "busy" ? 5000 :
       Math.max(1200, Math.min(nextWork, nextBell(state), delivery?.due ?? Infinity, sleepWork ? now+3000 : Infinity) - now);
   } catch (error) {
-    if (error instanceof ModelBudgetExhausted) {
-      const now = Date.now();
-      const delivery = await nextQQDelivery();
-      const {state}=await house();
-      delay = Math.max(1200, Math.min(error.retryAt, nextBell(state), state.mode==="asleep"?state.wakeAt:Infinity, delivery?.due ?? Infinity) - now);
-    }
     const detail = reportFailure("clock", error);
     await stmt(
       "INSERT OR REPLACE INTO channel_state VALUES('clock-health',?)",

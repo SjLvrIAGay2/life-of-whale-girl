@@ -66,7 +66,7 @@ export type State = {
   attentionScope?: string;
   attentionActivity?: string;
   quickSteps?: number;
-  budgetRetryAt?: number;
+  budgetRetryAt?: number; // Legacy pause marker, cleared on the next tick.
   lastResult?: unknown;
   journalHabit?: { everyDays:number; nextDay:string };
 };

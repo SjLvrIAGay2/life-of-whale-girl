@@ -20,7 +20,6 @@ import {
   currentSetting,
   house,
   memory,
-  ModelBudgetExhausted,
   one,
   saveVersion,
   stmt,
@@ -43,14 +42,14 @@ import { contactPreferences,voicePreference } from "./contact-preferences";
 import { turnImages } from "./chat-images";
 import { avoidedTerms, mentionsAvoided, ruleVersion } from "./memory-control";
 import { nextAnniversary, relationshipMood, sharedEntries, sharedWrites } from "./shared-memory";
-import { artForConversation, attachReading, browseOwnWorks, deskWorks, editWork, findOwnWork, newWork, prepareWorkEdit, workList, workStep } from "./works";
+import { artForConversation, attachReading, browseOwnWorks, deskWorks, editWork, findOwnWork, newWork, prepareWorkEdit, workList, workStep, WorkInputError } from "./works";
 import { cabinAction, cabinContext } from "./cabin";
 import { arrangeFurniture, initializeCabin } from "./cabin-store";
 import { gameKinds } from "./games";
 import { endActivity, publicActivities, leisureContext, play, readExperience, record } from "./activities";
 import { editSite, studioSchema } from "./studio";
 import { publicHome } from "../db";
-import { activityTrace, trace } from "./telemetry";
+import { activityTrace, trace, workInputTrace } from "./telemetry";
 import { beginSleep, isClockUpgrade, setAlarm, sleepContext, upgradeSleep, wakeBody } from "./sleep";
 import { chatOutcome, finishAction, readingBookmark, receiptForModel, recoverLastAction, savedFailure, type Outcome } from "./action-result";
 import { duePersonalPlans, planReading, readingCompletion, readingGoals, type ReadingTarget } from "./personal-plans";
@@ -414,6 +413,8 @@ export function processPainting(now=Date.now()) {
   return painting;
 }
 async function runPainting(now:number) {
+  // Release only jobs held by the retired quota, preserving other retry and delivery times.
+  await stmt("UPDATE art_jobs SET due=MIN(due,?),detail=NULL WHERE state='pending' AND lease IS NULL AND detail='等待次日创作额度'",now).run();
   const job=await one<ArtJob>("SELECT * FROM art_jobs WHERE state IN ('pending','running','ready') AND due<=? ORDER BY due,made LIMIT 1",now);
   if(!job) return "idle";
   const lease=crypto.randomUUID();
@@ -461,11 +462,6 @@ async function runPainting(now:number) {
   } catch(error) {
     const entry=await one<{state:string;lease:string|null}>("SELECT state,lease FROM art_jobs WHERE id=?",job.id);
     if(entry?.lease!==lease) return entry?.state??"cancelled";
-    if(error instanceof ModelBudgetExhausted) {
-      await stmt("UPDATE art_jobs SET state='pending',attempts=max(0,attempts-1),due=?,lease=NULL,detail=? WHERE id=? AND lease=?",
-        error.retryAt,"等待次日创作额度",job.id,lease).run();
-      return "deferred";
-    }
     const status=job.art?"ready":job.attempts>=2?"failed":"pending";
     const writes=[];
     if(status==="failed") writes.push(stmt(`UPDATE memories SET category='interrupted',details=json_set(details,'$.reason','绘图暂未成功')
@@ -748,9 +744,10 @@ async function execute(
         outcome={status:"done",summary:result.items.length?"翻到了这些旧作。":"这一次没有找到相符的旧作。",result};
         break;
       }
-      const selected=request?.id && await findOwnWork(request.id);
+      const selected=typeof request?.id==="string" && await findOwnWork(request.id.trim());
       if(selected && selected.scope===privateScope) planScope=receiptScope=privateScope;
       const edited=await prepareWorkEdit(planScope,a.work,t.now,t.newMem);
+      if ("field" in edited && edited.field) throw new WorkInputError(edited.field,edited.summary);
       t.writes.push(...edited.writes);
       planKind="writing";
       if("manuscript" in edited && edited.manuscript) progress={id:edited.manuscript,complete:request?.action==="finish"};
@@ -1435,6 +1432,11 @@ export async function tick(
   }, 60000);
   try {
     let { state } = await house(now);
+    if (state.budgetRetryAt!==undefined) {
+      delete state.budgetRetryAt;
+      if (state.mode==="awake") state.nextAt=Math.min(state.nextAt,now);
+      await commit(lock,state,[],true);
+    }
     if (state.experienceVersion!==1) {
       const repairs=await upgradeExperience(state);
       await commit(lock,state,repairs,true);
@@ -1538,7 +1540,7 @@ export async function tick(
       await commit(lock, state, t.writes);
       return { status: reviewed ? "promise_reviewed" : "promise_deferred" };
     }
-    const duePlans=reason==="clock" && !(state.budgetRetryAt && state.budgetRetryAt>now) ? await duePersonalPlans(now) : [];
+    const duePlans=reason==="clock" ? await duePersonalPlans(now) : [];
     if (reason === "clock" && (state.nextAt <= now || duePlans.length)) {
       const routine = defs.find(v => v.name === "routine")?.value ??
         "作息随最近的生活慢慢形成。";
@@ -1566,6 +1568,8 @@ export async function tick(
       if(archive || help || state.lastAction?.action==="object") leisure.latest=undefined;
       const decision = {
         self: persona(defs), sleep, rest, readingProgress,desk,works,cabin,help,archive,duePlans,
+        workHelp:state.lastAction?.action==="work" && ["failed","skipped"].includes(state.lastAction.status)
+          ? {usage:activityHelp.work} : undefined,
         reflection:state.lastAction?.action==="reflect" && state.lastAction.status==="failed"
           ? {usage:activityHelp.reflect,activities:leisure.recent} : undefined,
         question:state.question?.source && !readingSources.includes(state.question.source) ? {text:state.question.text} : state.question??(state.attention?{text:state.attention}:undefined),
@@ -1593,18 +1597,9 @@ export async function tick(
         }),
         mcp: externalTools.map(x => ({ name: x.id.slice(4), purpose: x.purpose, inputSchema:x.schema?JSON.parse(x.schema):undefined })),
       };
-      let result;
-      try {
-        result = await think(activityInstructions, decision, now);
-      } catch (error) {
-        if (!(error instanceof ModelBudgetExhausted)) throw error;
-        state.budgetRetryAt=state.nextAt=error.retryAt;
-        await commit(lock, state, t.writes);
-        return { status: "activity_deferred", next: state.nextAt };
-      }
+      const result = await think(activityInstructions, decision, now);
       t.writes.push(stmt("INSERT OR REPLACE INTO channel_state VALUES('activity-input/last-action',?)",
         JSON.stringify({at:now,previous:decision.lastAction})));
-      state.budgetRetryAt=undefined;
       for(const plan of duePlans) t.writes.push(stmt("UPDATE memories SET details=json_set(coalesce(details,'{}'),'$.presentedDue',?) WHERE id=? AND due=?",plan.due,plan.id,plan.due));
       const mark = t.writes.length,
         count = t.newMem.length,
@@ -1619,7 +1614,7 @@ export async function tick(
         state = t.state = before;
         endActivity(t);
         const action=actionSchema.shape.action.safeParse(result?.action).data ?? "unknown";
-        const field=error instanceof ReflectionInputError ? error.field : action==="reflect" && error instanceof z.ZodError
+        const field=error instanceof ReflectionInputError || error instanceof WorkInputError ? error.field : ["reflect","work"].includes(action) && error instanceof z.ZodError
           ? error.issues[0].path.join(".") : undefined;
         const prior=before.lastResult as {field?:string;attempts?:number}|undefined;
         const attempts=field && before.lastAction?.action===action && before.lastAction.status==="failed" && prior?.field===field
@@ -1628,7 +1623,7 @@ export async function tick(
         const detail=actionProblem(error);
         finishAction(state,action,now,{status:"failed",summary:"这次动作未完成。"+detail,
           result:{error:detail,...(field ? {field,attempts,
-            received:{evidenceId:clip(result?.evidenceId,80),idea:clip(result?.idea,350)}} : {})}});
+            received:action==="work" ? {work:workInputTrace(result?.work)} : {evidenceId:clip(result?.evidenceId,80),idea:clip(result?.idea,350)}} : {})}});
         state.activity = "在小屋";
         remember(
           t,
