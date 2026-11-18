@@ -1,35 +1,96 @@
-# 小屋对象
+# 在小屋里摆放和使用物品
 
-用 `action: "object"` 操作屋里的物品。物品编号、区域和动作在 `cabin.items`，可做的类型在 `cabin.types`。用编号选中同名物品。上一步的结果在 `cabin.latest`。查写法用 `help` 加操作名 `command` 或能力名 `capability`。
+每轮给小屋一个动作。外层的 `action` 填 `object`，里面的 `op` 说明这次想做什么。下面每个代码框是一轮。发出后，下一轮先看 `lastAction.summary` 了解发生了什么，再从 `cabin.latest` 取这一步的结果。
 
-## 做一颗薄荷糖，摆到窗沿
+## 把一颗薄荷糖装进窗沿的盒子
 
-每行是一次完整动作。先定义薄荷糖，再用 `create` 指定窗沿。小屋会找能放下的位置。目录里已有 `mint` 时直接用第二行。
+**1. 先教小屋做薄荷糖。** 用 `define` 给这种糖起个类型名 `mint`。`size` 依次是宽、深、高，单位是厘米。这颗糖重 2 克，可以吃。如果 `cabin.types` 已有 `mint`，直接从第 2 步开始。
 
-```jsonl
-{"action":"object","object":{"op":"define","type":"mint","definition":{"name":"薄荷糖","size":[1.3,1,1],"massG":2,"consumable":true}}}
-{"action":"object","object":{"op":"create","type":"mint","to":{"parent":"sill","region":"top"}}}
+```json
+{
+  "action": "object",
+  "object": {
+    "op": "define", "type": "mint",
+    "definition": { "name": "薄荷糖", "size": [1.3, 1, 1], "massG": 2, "consumable": true }
+  }
+}
 ```
 
-`size` 依次填宽、深、高，单位是厘米。`massG` 是克。要做一盒糖，可在有 `inside` 内腔的盒型定义里加 `"contents":[{"type":"mint","region":"inside","count":20}]`。以后每做一盒就有二十颗。改这一个盒子用 `update`，改下一批盒子用 `defaults`。
+成功后，`cabin.latest.type` 是 `mint`。这种糖只需定义一次，以后每颗都可以直接用 `create` 做。
 
-## 给棋盘加一个逐手复盘的动作
+**2. 在窗沿摆一个空盒。** `box` 是小屋会做的盒子。窗沿的编号是 `sill`，台面叫 `top`。在 `to` 里写好去处，小屋会挑能放下的位置。
 
-把下面的 `棋盘编号` 换成屋里那块棋盘的 `id`。第一行试读第一手，第二行用返回的 `preview` 编号启用，第三行就是以后复盘的用法。
-
-```jsonl
-{"action":"object","object":{"op":"preview","id":"棋盘编号","action":"review","behavior":{"input":"integer","recipe":{"description":"按手数看棋谱","steps":[{"op":"replay"}]}},"args":{"input":1}}}
-{"action":"object","object":{"op":"activate","id":"棋盘编号","action":"review","preview":"试跑编号"}}
-{"action":"object","object":{"op":"call","id":"棋盘编号","action":"review","args":{"input":1}}}
+```json
+{
+  "action": "object",
+  "object": {
+    "op": "create", "type": "box",
+    "to": { "parent": "sill", "region": "top" }
+  }
+}
 ```
 
-试跑时原棋盘保持原样。想撤回修改时，用 `rollback` 指定同一棋盘和动作名。
+**3. 做一颗糖，直接放进盒内。** 上一步返回的 `cabin.latest.id` 是刚摆好的那只盒子的编号。把它填到下面的 `盒子编号` 处。`inside` 是盒子的内腔。
 
-## 摆放和使用
+```json
+{
+  "action": "object",
+  "object": {
+    "op": "create", "type": "mint",
+    "to": { "parent": "盒子编号", "region": "inside" }
+  }
+}
+```
 
-- 找物品用 `catalog`，可按名字 `query`、类型 `type` 或容器 `parent` 查找。用 `inspect` 查看一件物品的状态、区域、承重、内容和动作。想改写已有动作时，在 `inspect` 加上它的 `action`。用 `type` 查看整份类型定义。
-- 移动用 `move`，在 `to` 填目标物品 `parent` 和区域 `region`。想指定位置可填该区域内的 `x`、`y`，每格一厘米。需要先问哪里放得下时用 `find`。放不下会说明原因，东西留在原处。
-- 区域的关系可以是表面 `on`、内腔 `inside`、挂位 `hang`、部件 `part` 或安装位 `installed`。区域的 `size` 是可用净尺寸，`opening` 是开口的宽和高。`loadG` 按总重计，`capacityCm3` 按容积计。软件大小 `installMB` 和安装位容量 `capacityMB` 都按 MB 计。
-- 用 `call` 指定物品和动作，按它的样例填 `args`。用 `consume` 指定容器、区域、食品类型和数量，一次取用。用 `stow` 连同里面的东西一起收起，清空后可用 `remove` 移除可删除的物品。
-- 新动作直接发送。如果需要重复发送同一次写操作，第一次就带上自选的 `requestId`，重发时沿用它和原参数。不同的操作各用自己的编号。
-- `visibility` 可选 `detail`（访客可看位置和可见内容）、`summary`（名称和所在区域）或 `hidden`（整件藏起）。关上抽屉也会遮住里面的东西。
+**4. 把这颗糖拿到书桌上。** 这次返回的 `cabin.latest.id` 是糖的编号，把它填到下面的 `糖的编号` 处。书桌的桌面是 `desk` 的 `top` 区域。
+
+```json
+{
+  "action": "object",
+  "object": {
+    "op": "move", "id": "糖的编号",
+    "to": { "parent": "desk", "region": "top" }
+  }
+}
+```
+
+成功时，`cabin.latest.at.parent` 是 `desk`。如果桌面放不下，糖还在盒里，`lastAction.summary` 会说明原因。
+
+## 给棋盘加一个按手数复盘的动作
+
+选一块已经下过至少一手的五子棋盘。从 `cabin.items` 复制它的 `id`，填到下面的 `棋盘编号` 处。如果没找到，可以用 `{"action":"object","object":{"op":"catalog","type":"board"}}` 查找，按回执里的名称和位置选中那一块。
+
+**1. 在这块棋盘上试读第一手。** 给新动作起名 `review`。它接收一个整数作为手数，用 `replay` 读出那一手的棋面。`args.input` 填 1 就是试读第一手。
+
+```json
+{
+  "action": "object",
+  "object": {
+    "op": "preview", "id": "棋盘编号", "action": "review",
+    "behavior": {
+      "input": "integer",
+      "recipe": { "description": "按手数看棋谱", "steps": [{ "op": "replay" }] }
+    },
+    "args": { "input": 1 }
+  }
+}
+```
+
+**2. 看过棋面，再决定是否启用。** 下一轮的 `cabin.latest.result.output` 里有第一手的落子说明和棋面。满意的话，直接把同一回执的 `cabin.latest.next` 作为这一轮的完整动作。里面已经填好了棋盘和试用编号，小屋会启用 `review`。
+
+**3. 用新动作复盘。** 启用后的 `cabin.latest.next` 就是下面这样一条 `call` 动作，已经填好了棋盘编号。直接发出可以再看第一手。以后想看哪一手，就把 `args.input` 改成那一手的数字。
+
+```json
+{
+  "action": "object",
+  "object": { "op": "call", "id": "棋盘编号", "action": "review", "args": { "input": 1 } }
+}
+```
+
+想撤回这次新增的动作，可把上面的 `op` 换成 `rollback`，去掉 `args`，保留棋盘编号和动作名。
+
+## 查其他用法
+
+屋里已有的物品在 `cabin.items`。用 `id` 区分同名物品，`regions` 列出能放东西的区域，`actions` 列出能做的动作。要看某个动作怎么用，可以先问这件物品。例如 `{"action":"object","object":{"op":"inspect","id":"website"}}` 会列出小站的动作和样例。调用时，把动作名填进 `call` 的内层 `action`，参数照着该动作的 `example` 填进 `args`。
+
+想先问哪里放得下，可以发 `{"action":"object","object":{"op":"help","command":"find"}}`。把回执里的 `example` 填入下一轮的 `object`，将物品和位置换成你选的。查其他操作时，把 `find` 换成操作名。省略 `command` 可以看到操作和能力的名字，用 `capability` 加能力名可以查它的参数。

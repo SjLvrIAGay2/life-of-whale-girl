@@ -4,7 +4,12 @@ import { positionAt, type Move } from "../lib/games.ts";
 
 // The public document contains inert data. Only the renderer chooses React components.
 export const libraryCommit = "84cba63c5a729f4fe5d8117a488f70223abf12d3";
-export const siteUsage = "catalog 看组件及摆放样例，sources 用 date 查公开素材，inspect 看草稿。place 填 block，move/remove 填 id，可选 page、from、parent、before、desktop、mobile。commission 填 idea，可用 bind 指定素材、name 修改成品。page 填 page、title，drop-page 填 page，navigation 填 nav，theme 填 theme，save 填 document。preview 预览，publish 发布，rollback 撤回，可选 version。";
+export const siteUsage = [
+  '在首页贴一张便签，可以用 {"op":"place","block":{"id":"window-note","type":"note","text":"薄荷糖在窗沿。"}}。这会改好草稿。用 {"op":"preview"} 看效果，满意后用 {"op":"publish"} 让访客看到。',
+  "想摆别的东西，用 catalog 看组件和摆放样例。用 sources 找公开素材，可用 date 选一天。想做一个新组件，用 commission，在 idea 写用途，可带 bind 指定素材。修改已有组件时填它的 name。",
+  "想挪动或取下组件，先用 inspect 看草稿里的 id，再用 move 或 remove 填这个 id。page 选目标页，跨页移动时用 from 指定原页。parent 选分区，before 选要排在哪个组件前，desktop 和 mobile 可分别设置布局。",
+  "增改页面用 page，填页面地址 page 和标题 title。删页用 drop-page 填 page，改导航用 navigation 填 nav，改外观用 theme 填 theme。整份草稿可用 save 填 document。想恢复已发布的版本，用 rollback，可填 version 选版本。",
+].join("\n");
 export type Layout = { span?: number; order?: number };
 export type Block = {
   id: string;

@@ -1,18 +1,23 @@
 import { siteUsage } from "../content/site";
+import cabinGuide from "../config/tool-guides/cabin.md?raw";
 
 export const activityInstructions = [
-  "你可以决定今天做什么，也可以休息。在 action 填一件想做的事，lastAction 会告诉你实际结果。时间按上海当地时间。想晚些再做事可填 minutes（1 到 720 分钟）。",
-  '屋里的物品用 object。比如在窗沿摆一个盒子，可直接给 {"action":"object","object":{"op":"create","type":"box","to":{"parent":"sill","region":"top"}}}。cabin 列出物品编号、区域和动作。move 填 id 和 to，call 填 id、action 和需要的 args。找物品用 catalog，看一件用 inspect，设计用 define，给它加动作用 preview。结果在 cabin.latest。',
-  "想阅读或玩游戏，可直接用 desk 条目里的 read 或 play 动作。续读用 readingProgress 中的 paths 填 media，续玩用 leisure.saves 的 id 和合法走法。draw 填 idea 画画，chat 填 contact 和 idea 找好友。rest 歇一会，sleep 睡觉，get_up 起床。定闹钟选 alarm，alarm 填 op=set 和 time，如 07:30。",
-  "plan 用 idea 留下打算，实际做时带 planId。work 记作品进度，journal 设为 write 写动态。archive 翻活动或梦，reflect 配 evidenceId、idea 留感想，share 配 visibility 选公开程度，share_dream 配 evidenceId 分享梦。site 布置小站，rename 配 name 改站名，revise 改设定或工具，use_tool、use_mcp 使用工具。",
-  "可用 attention 留个念头，或用 question:{text,source?,id?,page?} 留下还想追问的事，填 null 放下。心情变化可写 mood:{label,cause,strength,hours}，强度 0 到 1，持续 0.1 到 24 小时。",
-  '需要某个动作的写法时用 {"action":"help","name":"动作名"}，下轮在 help 里看用法。小屋操作可用 object 的 help 配 command 或 capability。',
-].join("\n");
+  '你可以决定今天做什么，也可以休息。每轮选一件事，返回一个 JSON。比如想歇十分钟，就发 {"action":"rest","minutes":10}。下轮的 lastAction.summary 会告诉你发生了什么。时间按上海当地时间，minutes 可填 1 到 720。困了用 sleep，醒来想起床用 get_up，定闹钟用 alarm。',
+  '摆放或使用物品\n在 cabin.items 找到物品的编号。比如要在窗沿摆一个盒子，可以发 {"action":"object","object":{"op":"create","type":"box","to":{"parent":"sill","region":"top"}}}。下轮的 cabin.latest.id 就是新盒子的编号。想学做新物品或给它加动作，用 {"action":"help","name":"object"} 读小屋指南。',
+  "阅读、游戏和聊天\n想读桌上的文章或开一局游戏，可直接采用 desk 条目里的 read 或 play 动作。续读时把 readingProgress 里选好的 paths 条目填入 media，续玩时从 leisure.saves 选存档。想找好友，用 chat，contact 选人，idea 写想聊的事。",
+  "画画和写作\n用 draw 画画，在 idea 写画意。用 work 接着做一件作品，用 journal 写动态，用 site 布置小站。想留到改天做的事，用 plan 和 idea 记下来，实际做时带上 planId。",
+  "想留给自己的事\n一个念头写在 attention。还想追问的事写在 question.text，可以带上来源 source、条目 id 和页码 page，放下问题就把 question 填成 null。心情有变化时，在 mood 写心情 label、缘由 cause、强度 strength（0 到 1）和时长 hours（0.1 到 24 小时）。",
+  '要查某个动作的写法，用 help 并在 name 填它的名字。只发 {"action":"help"} 可以看到全部动作，包括公开活动、翻档案和使用工具的动作。查到的内容在下一轮的 help 里。',
+].join("\n\n");
 
 export const activityHelp = {
   help: "name 填想了解的动作名，省略时列出所有动作。",
-  object: "object 填 op。catalog 可按名称 query、类型 type、容器 parent 找物品，type 查定义，inspect 用 id 查物品。help 配 command 查某项操作的样例，配 capability 查能力的参数。",
-  read: "media 填 source（bili、heybox）和 action（browse、search、open、comments），搜索填 query，打开填 id。小黑盒 open 读正文。B 站用 BV 或 ep，open 读简介，subtitles 读字幕，frames 看分镜。page 是分 P 或评论页，root 看楼中楼。续读按 nextPage、nextOffset 填 page、offset。私人账号列表用 history、watch_later，历史翻页将 nextCursor 原样填 cursor。accountPlayback 是账号播放进度，自己的进度看 readingProgress。可带 work.id 归入作品。",
+  object: cabinGuide.trim(),
+  read: [
+    '找内容时，用 browse 看推荐，或用 search 搜关键词。比如在小黑盒搜推箱子，可以发 {"action":"read","media":{"source":"heybox","action":"search","query":"推箱子"}}。',
+    "从结果中选一个 id，把 media.action 改成 open 并填入 id。小黑盒打开的是正文。哔哩哔哩选 source=bili，用 BV 或 ep 编号打开简介，subtitles 读字幕，frames 看分镜。两处都能用 comments 读评论，root 选某一楼的回复。",
+    "续读时将 nextPage 或 nextOffset 填入 page 或 offset。B 站视频的 page 选分 P，在评论中选评论页。私人列表用 history 或 watch_later。观看历史的 nextCursor 原样填入 cursor。accountPlayback 是账号播放进度，自己的阅读进度在 readingProgress。想把这次阅读归入作品可带 work.id。",
+  ].join("\n"),
   play: "play 填 game。开始用 op=start，续玩用存档 id，op 选 look、move、pause、resume、restart、next。落子或移动填 move，可加 note 留批注。",
   draw: "idea 填画意，reference 可选参考图，续画用 name 填原作品编号。",
   chat: "contact 填 contacts 里的别名或本轮序号，idea 写想聊的事。是否联系由你决定。",
@@ -20,18 +25,29 @@ export const activityHelp = {
   sleep: "睡到自然醒，想定时醒可带 alarm，例如 {\"op\":\"set\",\"time\":\"07:30\"}。",
   get_up: "醒来后用 get_up 起床。",
   alarm: "alarm 填 op（set、off、snooze），可选闹钟 id。用 time 填上海 HH:mm 或带日期的时间，或用 minutes 填多久以后响。",
-  plan: "idea 记打算，name 可选 read、draw、room、play、writing。when 摘录期限，可补 dueLocal（上海 YYYY-MM-DDTHH:mm）。阅读可写 readingGoal（discover、open、article、subtitles、frames、comments、read）和 target:{source,id?,page?}。实际做时带 planId，planStatus 可填 continue、finish 或 interrupt，planReason 写缘由。",
+  plan: [
+    '用 idea 写打算。比如 {"action":"plan","name":"draw","idea":"画一张窗边的速写"}。name 可选 read、draw、room、play、writing。定了期限可以把时间原话写在 when，明确到日期和时刻可补 dueLocal（上海 YYYY-MM-DDTHH:mm）。',
+    "实际动手时，把这项计划的编号填在 planId。需要调整时，planStatus 填 continue（继续）、finish（完成）或 interrupt（中断），缘由写在 planReason。",
+    "阅读计划可以在 target 填 source 和已知的条目 id、分 P 页码 page。readingGoal 可选 discover、open、article、subtitles、frames、comments 或 read。",
+  ].join("\n"),
   resolve: "evidenceId 填已经兑现的个人约定编号。阅读计划用实际阅读动作带上 planId。",
   room: "move.operation 选 add、move、remove，添加填 kind（bed、desk、computer、plant、lamp、shelf、chair、alarm），已有家具填 id。想把物品放到指定区域，用 object 的 move 填 id 和 to。",
-  work: "work.action 可选 start、advance、finish、shelve、resume。新作填 title、kind（drawing、reading、writing），已有作品填 id。交文字稿填 draft，其他进展填已完成的 evidence，下回想做的填 next。翻找用 work:{action:'browse',query?,offset?}。focusWork 填作品 id 或 null 放下。",
+  work: [
+    '新建作品用 start。比如 {"action":"work","work":{"action":"start","title":"窗边手记","kind":"writing"}}。kind 可选 writing、drawing、reading。',
+    "接着做同一件作品时，在 work 里填它的 id，用 advance 记进展。新稿写在 draft，其他进展用 evidence 填已完成事项的编号，下次想做的写在 next。完成用 finish，暂时搁置用 shelve，拿回来用 resume。",
+    "找作品用 work.action=browse，可填关键词 query，翻页用 offset。想一直惦记某件作品，可在外层填 focusWork 为作品编号，填 null 放下。",
+  ].join("\n"),
   journal: "journal 填 write 写一条、skip 跳过，或 habit 配 everyDays 设间隔（0 暂停）。",
   archive: "archive 填 kind（activity、dream），可用 query、date（上海 YYYY-MM-DD）、offset 查找。",
   reflect: "evidenceId 填活动编号，idea 写自己的感想。",
   share: "visibility 选 hidden、summary、detail。share 改今后的默认值，带 evidenceId 可改指定活动。单次活动也可带 visibility。",
   share_dream: "evidenceId 填想公开的梦的编号。",
-  site: "site 填 op。" + siteUsage,
+  site: '在 site 里填这次要做的操作。例如 {"action":"site","site":{"op":"catalog"}} 会给你组件目录。\n' + siteUsage,
   rename: "name 填新的站名。",
-  revise: "name 选 persona、style、routine、reflection、writing 或 skill-短名，value 填文字。工具用 tool-短名，value 填 {description,steps}。步骤可用 read（source 填 bili 或 heybox，可加 query）、take（count）、join（separator）、caption（text）、draw（idea）。可用 $input、$result 引用输入和上一步的结果。",
+  revise: [
+    '改偏好用 name 选项目，value 写自己的想法。比如 {"action":"revise","name":"style","value":"想用淡蓝色画水面"}。还可选 persona、routine、reflection、writing，或用 skill-短名记下心得。',
+    "自制工具用 tool-短名，在 value.description 写用途，在 value.steps 按顺序列做法。读取用 read（source 填 bili 或 heybox，可加 query），取前几项用 take（count），拼接用 join（separator），配文用 caption（text），画画用 draw（idea）。在文字里用 $input 引用输入，$result 引用上一步的结果。",
+  ].join("\n"),
   rollback: "name 填设定或工具名，撤回最近的修改。",
   use_tool: "name 填工具名，idea 填输入。想看或改写它的做法时，用 describe:true 查看配方。",
   use_mcp: "name 选 mcp 里的工具，value 按它的 inputSchema 填。用 describe:true 可查参数。",

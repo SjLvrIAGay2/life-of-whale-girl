@@ -38,6 +38,7 @@ const plugins = [
 await build({
   entryPoints: ["runtime/resident.mjs"],
   bundle: true,
+  loader: { ".md": "text" },
   platform: "node",
   format: "esm",
   target: "node24",
