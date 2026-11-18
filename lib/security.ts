@@ -1,3 +1,5 @@
+import { securityErrors } from "../config/texts/errors.ts";
+import { numbers } from "../config/numbers.ts";
 import { env } from "cloudflare:workers";
 import { createHash, timingSafeEqual } from "node:crypto";
 export function same(a: string, b: string) {
@@ -34,8 +36,8 @@ export function json(o: unknown, status = 200) {
     },
   });
 }
-export async function input(r: Request, limit = 24000) {
-  if (!r.body) throw Error("缺少请求内容");
+export async function input(r: Request, limit: number = numbers.defaults.requestMaxBytes) {
+  if (!r.body) throw Error(securityErrors.missingBody);
   const buffer = await limited(r.body, limit);
   return JSON.parse(new TextDecoder().decode(buffer));
 }
@@ -52,7 +54,7 @@ export async function limited(
     size += value.byteLength;
     if (size > limit) {
       await reader.cancel();
-      throw Error("数据过大");
+      throw Error(securityErrors.bodySize);
     }
     chunks.push(value);
   }

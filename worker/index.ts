@@ -1,3 +1,4 @@
+import { routes } from "../config/routes.ts";
 import handler from "vinext/server/fetch-handler";
 function migrationOrigin(value?: string) {
   if (!value) return;
@@ -13,7 +14,7 @@ export default {
     const destination = migrationOrigin(bindings.WHALE_MOVED_ORIGIN);
     if (destination && destination !== url.origin) {
       if(url.pathname==="/inbox" || (url.pathname.startsWith("/api/") &&
-          !["/api/v1/life/home","/api/v1/life/activity","/api/v1/life/work-history"].includes(url.pathname))) {
+          ![routes.homeData,routes.activityData,routes.workHistory].includes(url.pathname))) {
         return new Response(null,{status:410});
       }
       if (req.method === "GET" || req.method === "HEAD") {

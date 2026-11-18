@@ -1,3 +1,5 @@
+import { numbers } from "../config/numbers.ts";
+import { routes } from "../config/routes.ts";
 import { all, memory, one, stmt, type Memory } from "../db";
 import type { State } from "../content/initial";
 
@@ -16,7 +18,7 @@ export async function attachReading(work: string, activity: string, scope:string
   if (target.scope==="public" && scope!=="public") return {attached:false,reason:"这次私人阅读只能归入私人作品。",writes:[]};
   return {attached:true,writes:[
     stmt("INSERT OR IGNORE INTO work_steps(id,work,made,body,url,level) VALUES(?,?,?,'留下了这次阅读进度。',?,'reading')",
-      "reading-"+activity,work,now,"/activity/"+activity),
+      "reading-"+activity,work,now,routes.activity+activity),
     stmt("UPDATE works SET updated=?,next=COALESCE(?,next) WHERE id=?",now,typeof next==="string"?short(next,240):null,work),
   ]};
 }
@@ -93,7 +95,7 @@ export async function workEvidenceChoices(id:unknown, action?:unknown) {
     SELECT * FROM candidates WHERE CASE ? WHEN 'advance' THEN advance WHEN 'finish' THEN finish ELSE advance OR finish END
     ORDER BY made DESC,id LIMIT 12`,work.id,short(action,20));
   return {target:{id:work.id,title:work.title,kind:work.kind,state:work.state},evidence:rows.map(row=>({
-    evidenceId:row.id,kind:row.kind,date:new Date(row.made+8*3600000).toISOString().slice(0,16).replace('T',' '),
+    evidenceId:row.id,kind:row.kind,date:new Date(row.made+numbers.defaults.shanghaiOffsetMs).toISOString().slice(0,16).replace('T',' '),
     description:row.body,source:row.source || undefined,
     actions:[...(row.advance?["advance"]:[]),...(row.finish?["finish"]:[])],
   }))};
@@ -246,7 +248,7 @@ export async function publicRoom() {
     }),
     one<{body:string;made:number}>("SELECT body,made FROM memories WHERE scope='public' AND kind='shared_dream' ORDER BY made DESC LIMIT 1"),
     all<{body:string;category:string;made:number;reason:string|null}>("SELECT body,category,made,json_extract(details,'$.reason') AS reason FROM memories WHERE scope='public' AND kind='day_plan' AND topic=? ORDER BY made LIMIT 5",
-      new Date(Date.now()+8*3600000).toISOString().slice(0,10)),
+      new Date(Date.now()+numbers.defaults.shanghaiOffsetMs).toISOString().slice(0,10)),
   ]);
   return {works,dream,plans};
 }

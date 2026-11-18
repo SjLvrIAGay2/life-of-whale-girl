@@ -1,21 +1,26 @@
+import { services } from "../config/operator/services.ts";
+import { speechErrors } from "../config/texts/errors.ts";
+import { texts } from "../config/texts.ts";
+import { numbers } from "../config/numbers.ts";
+import { links } from "../config/links.ts";
 import { env } from "cloudflare:workers";
 import { limited } from "./security";
 import { pcmWave } from "./wave";
 import { measured } from "./telemetry";
 
-export const maxVoiceBytes = 8 * 1024 * 1024;
-const maxSynthBytes = 30 * 60 * 24000 * 2;
+export const maxVoiceBytes = numbers.defaults.voiceBytes;
+const maxSynthBytes = 30 * 60 * numbers.defaults.voiceSampleRate * 2;
 function auth() {
-  if (!env.WHALE_DEEPSEEK_API_KEY) throw Error("未配置语音服务");
+  if (!env.WHALE_DEEPSEEK_API_KEY) throw Error(speechErrors.credentials);
   return { Authorization: "Bearer " + env.WHALE_DEEPSEEK_API_KEY };
 }
 export class SpeechError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 async function request(tool: "asr" | "tts", body: BodyInit, headers: Record<string,string>) {
-  const response = await fetch("https://api.deepseek.com/v1/tools/" + tool, {
+  const response = await fetch(links.defaults.speech + tool, {
     method: "POST", body, headers: { ...auth(), ...headers }, redirect: "error",
-    signal: AbortSignal.timeout(85000),
+    signal: AbortSignal.timeout(numbers.defaults.speechTimeoutMs),
   });
   if (!response.ok) {
     const status = response.status;
@@ -26,25 +31,25 @@ async function request(tool: "asr" | "tts", body: BodyInit, headers: Record<stri
   return response;
 }
 export async function transcribe(bytes: Uint8Array) {
-  if (!bytes.length || bytes.length > maxVoiceBytes) throw new SpeechError(413, "音频须在 8 MiB 以内");
+  if (!bytes.length || bytes.length > maxVoiceBytes) throw new SpeechError(413, speechErrors.size);
   const head = Buffer.from(bytes.buffer, bytes.byteOffset, Math.min(12, bytes.length)).toString("ascii");
   const ogg = head.startsWith("OggS");
   if (!ogg && !(head.startsWith("RIFF") && head.endsWith("WAVE")))
-    throw new SpeechError(415, "请选择 PCM WAV 或 Ogg Opus 音频");
+    throw new SpeechError(415, speechErrors.format);
   const form = new FormData();
   form.append("file", new Blob([Uint8Array.from(bytes)], {type: ogg ? "audio/ogg" : "audio/wav"}), ogg ? "voice.ogg" : "voice.wav");
-  return measured("asr","deepseek-asr",Date.now(),async()=>{
+  return measured("asr",services.asrModel,Date.now(),async()=>{
   const result = await (await request("asr", form, {})).json<{text?:string;duration_ms?:number}>();
-  if (typeof result.text !== "string" || !result.text.trim()) throw new SpeechError(422, "没有听清，请再说一次");
+  if (typeof result.text !== "string" || !result.text.trim()) throw new SpeechError(422, speechErrors.inaudible);
   return result.text.trim();
   });
 }
 export async function synthesize(text: string) {
-  return measured("tts","stella",Date.now(),async()=>{
-  const r = await request("tts", JSON.stringify({text, voice_id:"stella", format:"pcm", filter_markdown:true}), {"Content-Type":"application/json"});
-  if (!r.body || !r.headers.get("content-type")?.includes("audio/")) throw Error("语音服务未返回音频");
+  return measured("tts",texts.defaults.speechVoice,Date.now(),async()=>{
+  const r = await request("tts", JSON.stringify({text, voice_id:texts.defaults.speechVoice, format:"pcm", filter_markdown:true}), {"Content-Type":"application/json"});
+  if (!r.body || !r.headers.get("content-type")?.includes("audio/")) throw Error(speechErrors.noAudio);
   const pcm = await limited(r.body, maxSynthBytes);
-  if (pcm.byteLength < 2 || pcm.byteLength % 2) throw Error("语音数据不完整");
-  return pcmWave(pcm, 24000);
+  if (pcm.byteLength < 2 || pcm.byteLength % 2) throw Error(speechErrors.incomplete);
+  return pcmWave(pcm, numbers.defaults.voiceSampleRate);
   });
 }

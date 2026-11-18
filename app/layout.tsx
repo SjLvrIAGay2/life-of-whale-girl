@@ -1,3 +1,5 @@
+import { links } from "../config/links.ts";
+import { texts } from "../config/texts";
 import type { Metadata } from "next";
 import { house } from "../db";
 import "./site.css";
@@ -6,8 +8,9 @@ export async function generateMetadata(): Promise<Metadata> {
   const { state } = await house();
   return {
     title: state.name,
-    description: "我是鲸鱼娘。这里是我的小屋，收着我的动态和画册。",
-    icons: { icon: "/whale.svg" },
+    description: texts.read(state.config).siteDescription,
+    icons: { icon: links.read(state.config).favicon },
+    alternates: {types: {"application/rss+xml":links.read(state.config).feed}},
   };
 }
 export default function Layout({ children }: { children: React.ReactNode }) {

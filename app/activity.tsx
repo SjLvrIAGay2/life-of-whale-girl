@@ -1,4 +1,6 @@
 "use client";
+import { useSiteCopy } from "./site-copy";
+import { formatText } from "../config/options";
 import { useState } from "react";
 import type { PublicHome } from "../content/initial";
 import { readingOutcome, sourceNames, videoPart, type PublicActivity } from "../content/activity";
@@ -6,23 +8,24 @@ import { programFrame, programRows, type Part, type Program } from "../content/s
 import { Button, Flex, Grid, Icon, Image, Link, Paragraph, Progress, Stack, Text, Title } from "./yuki";
 
 const cols = "ABCDEFGHI";
-const tiles: Record<string, string> = {
-  "#": "墙",
-  "@": "人",
-  "+": "人在目标点",
-  $: "箱",
-  ".": "目标",
-  "*": "已到位",
-  " ": "地板",
-};
 export function Board({ board, chess, last }: { board: string[]; chess: boolean; last?: string }) {
+  const copy=useSiteCopy();
+  const tiles: Record<string, string> = {
+    "#": copy.puzzleWall,
+    "@": copy.puzzlePlayer,
+    "+": copy.playerOnGoal,
+    $: copy.puzzleBox,
+    ".": copy.puzzleGoal,
+    "*": copy.boxOnGoal,
+    " ": copy.puzzleFloor,
+  };
   return (
     <Grid
       columns={(board[0]?.length || 1) + (chess ? 1 : 0)}
       gap="0"
       className={"board " + (chess ? "chess" : "boxes")}
       role="img"
-      aria-label={(chess ? "五子棋棋盘" : "推箱子局面") + " " + board.join(" / ")}
+      aria-label={(chess ? copy.chessBoard : copy.puzzleBoard) + " " + board.join(" / ")}
     >
       {chess &&
         ["", ...cols].map((col, i) => (
@@ -43,7 +46,7 @@ export function Board({ board, chess, last }: { board: string[]; chess: boolean;
           return (
             <Text
               key={pos}
-              title={pos + " " + (chess ? ({ X: "黑棋", O: "白棋" }[v] ?? "空位") : tiles[v])}
+              title={pos + " " + (chess ? ({ X: copy.blackStone, O: copy.whiteStone }[v] ?? copy.emptyCell) : tiles[v])}
               data-piece={chess ? v : tiles[v]}
               data-last={pos === last || undefined}
               className="tile"
@@ -63,8 +66,9 @@ export function Board({ board, chess, last }: { board: string[]; chess: boolean;
   );
 }
 export function ActivityDetail({ item }: { item: PublicActivity }) {
+  const copy=useSiteCopy();
   const e = item.detail;
-  if (!e) return <Paragraph tone="secondary">这次只留了一句状态。</Paragraph>;
+  if (!e) return <Paragraph tone="secondary">{copy.summaryOnly}</Paragraph>;
   return (
     <Stack gap="4">
       {e.kind === "draw" && e.art && e.title && (
@@ -76,23 +80,23 @@ export function ActivityDetail({ item }: { item: PublicActivity }) {
           <Flex gap="3" wrap>
             <Text strong>
               {e.game.kind === "gomoku"
-                ? "五子棋 · " + e.game.moves.length + " 手"
-                : "推箱子 · 第 " + e.game.level + " 关"}
+                ? formatText(copy.chessMoveCount,{moves:e.game.moves.length})
+                : formatText(copy.puzzleLevel,{level:e.game.level})}
             </Text>
             <Text tone="secondary">
               {e.game.result ||
                 (e.game.paused
-                  ? "已搁置"
+                  ? copy.pausedGame
                   : e.game.kind === "gomoku"
-                    ? "轮到黑棋（鲸鱼娘）"
-                    : "已走 " + e.game.steps + " 步")}
+                    ? copy.blackToMove
+                    : formatText(copy.stepsTaken, {count:e.game.steps}))}
             </Text>
           </Flex>
           <Paragraph>
             {e.input && (
               <Text strong>
                 {e.game.kind === "gomoku"
-                  ? "我选了 " + e.input
+                  ? formatText(copy.selectedCell,{cell:e.input})
                   : "我试着向" +
                     ({ left: "左", right: "右", up: "上", down: "下" }[e.input] ?? e.input) +
                     "走"}
@@ -103,7 +107,7 @@ export function ActivityDetail({ item }: { item: PublicActivity }) {
           </Paragraph>
           {e.game.moves.length > 0 && (
             <Text size="sm">
-              最近一手　{e.game.moves.at(-1)?.stone}棋 {e.game.moves.at(-1)?.cell}
+              {formatText(copy.lastMove,{stone:e.game.moves.at(-1)!.stone,cell:e.game.moves.at(-1)!.cell})}
             </Text>
           )}
         </>
@@ -111,20 +115,20 @@ export function ActivityDetail({ item }: { item: PublicActivity }) {
       {e.kind === "reading" && (
         <>
           <Text className="eyeline">
-            {sourceNames[e.source]}　/　{readingOutcome(e)}
+            {sourceNames[e.source]}　/　{readingOutcome(e,copy)}
             {e.page &&
               (videoPart(e)
                 ? "　·　第 " + e.page + " P"
                 : "　·　第 " + e.page + " 页")}
             {e.offset !== undefined && ["subtitles", "storyboard_viewed"].includes(e.level)
-              ? "　·　第 " + (e.offset + 1) + (e.nextOffset && e.nextOffset > e.offset + 1 ? "–" + e.nextOffset : "") + (e.level === "subtitles" ? " 句" : " 张") + (e.atEnd ? "（末尾）" : "")
+              ? "　·　第 " + (e.offset + 1) + (e.nextOffset && e.nextOffset > e.offset + 1 ? "–" + e.nextOffset : "") + (e.level === "subtitles" ? " 句" : " 张") + (e.atEnd ? copy.readingEnd : "")
               : ""}
           </Text>
           {e.coverage && <Text size="sm" tone="secondary">{e.coverage}</Text>}
-          {e.filteredCount !== undefined && <Text size="sm" tone="secondary">本页按昵称及回复数过滤了 {e.filteredCount} 条评论。</Text>}
+          {e.filteredCount !== undefined && <Text size="sm" tone="secondary">{formatText(copy.filteredComments, {count:e.filteredCount})}</Text>}
           {e.action === "archive" && (
             <Text size="sm" tone="secondary">
-              旧站留下的阅读书签
+              {copy.legacyBookmark}
             </Text>
           )}
           {e.items.map((i, index) => (
@@ -138,7 +142,7 @@ export function ActivityDetail({ item }: { item: PublicActivity }) {
           ))}
           {!!e.comments?.length && (
             <Stack gap="2">
-              <Text strong>读到的讨论</Text>
+              <Text strong>{copy.discussionTitle}</Text>
               {e.comments.map((c) => (
                 <Paragraph key={c.id} className="quote">
                   <Text size="xs">#{c.id}　</Text>
@@ -155,9 +159,10 @@ export function ActivityDetail({ item }: { item: PublicActivity }) {
   );
 }
 export function Interactive({ program, home, bind }: { program: Program; home: PublicHome; bind?: string }) {
+  const copy=useSiteCopy();
   const rows = programRows(program, home, bind);
   const [cursor, setCursor] = useState(program.start === "first" ? 0 : Math.max(0, rows.length - 1));
-  if (!rows.length) return <Text tone="secondary">这件作品还没有可展示的公开记录。</Text>;
+  if (!rows.length) return <Text tone="secondary">{copy.noRecords}</Text>;
   const frame = programFrame(rows, cursor, program.source === "moves");
   function render(p: Part, key: string): React.ReactNode {
     if (p.when && !frame.fields[p.when]) return null;
@@ -191,7 +196,7 @@ export function Interactive({ program, home, bind }: { program: Program; home: P
       case "Board":
         return <Board key={key} board={frame.board!} chess last={frame.fields.cell} />;
       case "Progress":
-        return <Progress key={key} value={frame.cursor + 1} max={rows.length} label="浏览进度" />;
+        return <Progress key={key} value={frame.cursor + 1} max={rows.length} label={copy.progressLabel} />;
       case "Button": {
         const target = frame.cursor + (p.step ?? 0);
         return (

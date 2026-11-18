@@ -1,3 +1,7 @@
+import { texts } from "../config/texts";
+import { numbers } from "../config/numbers";
+import type { Overrides } from "../config/options";
+import { publicOverrides } from "../config/registry";
 import { env } from "cloudflare:workers";
 import {
   dayOf,
@@ -42,6 +46,10 @@ export async function house(now = Date.now()) {
     residentId,
   );
   return { state: JSON.parse(row!.state) as State, revision: row!.revision };
+}
+export async function currentOverrides(): Promise<Overrides | undefined> {
+  const row = await one<{config: string | null}>("SELECT json_extract(state,'$.config') AS config FROM resident WHERE id=?", residentId);
+  return row?.config ? JSON.parse(row.config) : undefined;
 }
 export type Memory = {
   id: string;
@@ -92,13 +100,14 @@ export async function publicHome(previewSite?:import("../content/site").Site): P
   const {publicActivities}=await import("../lib/activities");
   const {siteBindings}=await import("../content/site");
   const {publicRoom}=await import("../lib/works");
-  const [{ state, revision }, posts, art,objects,site] = await Promise.all([
-    house(),
+  const {state, revision} = await house();
+  const n = numbers.read(state.config), copy=texts.read(state.config);
+  const [posts, art,objects,site] = await Promise.all([
     all<{ day: string; made: number; body: string; sources: string }>(
-      "SELECT day,made,body,sources FROM daily_posts ORDER BY day DESC LIMIT 4",
+      "SELECT day,made,body,sources FROM daily_posts ORDER BY day DESC LIMIT ?", n.homePostCount,
     ),
     all<Art>(
-      "SELECT id,title,made FROM drawings WHERE scope='public' ORDER BY made DESC LIMIT 6",
+      "SELECT id,title,made FROM drawings WHERE scope='public' ORDER BY made DESC LIMIT ?", n.homeArtCount,
     ),
     publicRoom(),previewSite??publishedSite(),
   ]);
@@ -115,10 +124,10 @@ export async function publicHome(previewSite?:import("../content/site").Site): P
   const inBed=!!state.inBed && state.bedVisibility!=="hidden" && state.sharing!=="hidden";
   const asleep=state.mode==="asleep" && (current?.kind==="sleep" || inBed);
   return {
-    name: state.name,site,activities,boundArt,boundPosts:boundPosts.map(p=>({...p,sources:JSON.parse(p.sources)})),currentActivity:current?.id,
+    config: publicOverrides(state.config), name: state.name,site,activities,boundArt,boundPosts:boundPosts.map(p=>({...p,sources:JSON.parse(p.sources)})),currentActivity:current?.id,
     mode: asleep?"asleep":"awake",
     inBed,
-    activity: current?.label??(asleep?"在床上睡觉":inBed?"醒着，在床上躺一会儿":"在小屋"),
+    activity: current?.label??(asleep?copy.sleeping:inBed?copy.inBed:copy.atHome),
     room: cabin.scene(visible),cabin:visible,
     revision,
     posts: posts.map((p) => ({
@@ -137,15 +146,17 @@ export async function archive(day: string) {
   }>("SELECT day,body,made,sources FROM daily_posts WHERE day=?", day);
   return row ? { ...row, sources: JSON.parse(row.sources) } : null;
 }
-export async function publicPage(params:URLSearchParams) {
+export async function publicPage(params:URLSearchParams, forFeed=false) {
   const home=await publicHome(),type=params.get("archive");
+  const n=numbers.read(home.config);
+  const size=forFeed ? n.rssCount : n.archivePageSize;
   const target=params.get("activity");
   if(type==="activities" || target) {
     const {activityPage,publicActivity}=await import("../lib/activities");
     const {state}=await house();
     if(type==="activities") {
-      const rows=await activityPage(state,Math.max(0,parseInt(params.get("offset")||"0",10)||0),25);
-      home.activities=rows.slice(0,24);home.more=rows.length>24;
+      const rows=await activityPage(state,Math.max(0,parseInt(params.get("offset")||"0",10)||0),size+1);
+      home.activities=rows.slice(0,size);home.more=rows.length>size;
     }
     if(target && !home.activities?.some(a=>a.id===target)) {
       const item=await publicActivity(state,target);
@@ -160,13 +171,13 @@ export async function publicPage(params:URLSearchParams) {
   home.series=allSeries;
   if(type==="gallery") {
     home.art=await all<Art>(`SELECT id,title,made FROM drawings d WHERE scope='public' AND instr(title,?)>0 AND strftime('%Y-%m',made/1000,'unixepoch','+8 hours') LIKE ?
-      AND (?='' OR EXISTS(SELECT 1 FROM work_steps s JOIN works w ON w.id=s.work WHERE w.id=? AND w.scope='public' AND w.state<>'hidden' AND s.art=d.id)) ORDER BY made DESC,id DESC LIMIT 25 OFFSET ?`,query,month+"%",series,series,offset);
-    home.more=home.art.length>24;home.art=home.art.slice(0,24);
+      AND (?='' OR EXISTS(SELECT 1 FROM work_steps s JOIN works w ON w.id=s.work WHERE w.id=? AND w.scope='public' AND w.state<>'hidden' AND s.art=d.id)) ORDER BY made DESC,id DESC LIMIT ? OFFSET ?`,query,month+"%",series,series,size+1,offset);
+    home.more=home.art.length>size;home.art=home.art.slice(0,size);
   } else {
     const rows=await all<Omit<PublicPost,"sources"> & {sources:string}>(`SELECT day,made,body,sources FROM daily_posts p WHERE day LIKE ? AND (?='' OR day=?) AND (instr(body,?)>0 OR instr(sources,?)>0)
       AND (?='' OR EXISTS(SELECT 1 FROM work_steps s JOIN works w ON w.id=s.work JOIN json_each(p.evidence) e ON e.value=s.evidence WHERE w.id=? AND w.scope='public' AND w.state<>'hidden'))
-      ORDER BY day DESC LIMIT 25 OFFSET ?`,month+"%",day,day,query,query,series,series,offset);
-    home.posts=rows.slice(0,24).map(p=>({...p,sources:JSON.parse(p.sources)}));home.more=rows.length>24;
+      ORDER BY day DESC LIMIT ? OFFSET ?`,month+"%",day,day,query,query,series,series,size+1,offset);
+    home.posts=rows.slice(0,size).map(p=>({...p,sources:JSON.parse(p.sources)}));home.more=rows.length>size;
   }
   return home;
 }

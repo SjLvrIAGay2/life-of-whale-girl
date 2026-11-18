@@ -1,3 +1,4 @@
+import { texts } from "../config/texts.ts";
 import { all, one, stmt, type Memory } from "../db";
 import type { State } from "../content/initial";
 import { experienceLabel, videoPart, type Experience, type PublicActivity, type Reading, type Visibility } from "../content/activity";
@@ -22,7 +23,7 @@ export function record(
 ) {
   endActivity(t);
   t.state.currentActivity = id;
-  t.state.activity = experienceLabel(detail);
+  t.state.activity = experienceLabel(detail,texts.read(t.state.config));
   t.writes.push(
     stmt(
       "INSERT INTO activities(id,made,until,visibility,detail) VALUES(?,?,?,?,?)",
@@ -143,8 +144,9 @@ export async function leisureContext(state: State) {
     sharing: state.sharing ?? "detail",
   };
 }
-async function project(rows: Row[], preference: Visibility): Promise<PublicActivity[]> {
+async function project(rows: Row[], preference: Visibility, overrides?: State["config"]): Promise<PublicActivity[]> {
   if (preference === "hidden") return [];
+  const copy=texts.read(overrides);
   const notes = new Set<string>();
   const result = rows
     .filter((r) => r.visibility !== "hidden")
@@ -164,7 +166,7 @@ async function project(rows: Row[], preference: Visibility): Promise<PublicActiv
         made: row.made,
         until: row.until,
         kind: detail.kind,
-        label: experienceLabel(detail),
+        label: experienceLabel(detail,copy),
         ...(full ? { detail, ...(remark ? { remark } : {}) } : {}),
       };
     });
@@ -208,11 +210,11 @@ export async function activityPage(state: State, offset: number, limit: number) 
     limit,
     offset,
   );
-  return project(rows, state.sharing ?? "detail");
+  return project(rows, state.sharing ?? "detail",state.config);
 }
 export async function publicActivity(state: State, id: string) {
   const row = await one<Row>("SELECT * FROM activities WHERE id=? AND visibility<>'hidden'", id);
-  return row ? (await project([row], state.sharing ?? "detail"))[0] : undefined;
+  return row ? (await project([row], state.sharing ?? "detail",state.config))[0] : undefined;
 }
 export async function activityArchive(state: State, cursor: number, limit: number) {
   const rows =
@@ -226,7 +228,7 @@ export async function activityArchive(state: State, cursor: number, limit: numbe
   const more = rows.length > limit;
   if (more) rows.pop();
   return {
-    items: await project(rows, state.sharing ?? "detail"),
+    items: await project(rows, state.sharing ?? "detail",state.config),
     cursor: rows.at(-1)?.position ?? cursor,
     more,
   };
@@ -239,7 +241,7 @@ export async function publicActivities(state: State, pins: string[] = []) {
     OR id IN (SELECT value FROM json_each(?)) ORDER BY made DESC,rowid DESC`,
     JSON.stringify(pins),
   );
-  return project(rows, state.sharing ?? "detail");
+  return project(rows, state.sharing ?? "detail",state.config);
 }
 // Old observation memories have a structured first line followed by title and observed text.
 export function legacyReading(

@@ -1,0 +1,9 @@
+{
+  "model": "bge-small-zh-v1.5-75c43b0-int8-cls",
+  "dimensions": 512,
+  "tokens": 512,
+  "operatorThreads": 2,
+  "interOperatorThreads": 1,
+  "normalizationFloor": 1e-12,
+  "timeoutMs": 30000
+}

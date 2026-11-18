@@ -1,15 +1,22 @@
+import { formatText } from "../config/options";
+import { moveIn } from "../config/resident-profile";
+import { configReceipts } from "../config/texts/receipts";
+import { lifeErrors } from "../config/texts/errors.ts";
+import { texts } from "../config/texts";
+import { drawingReview, storyboard, sleepReview, journal } from "../config/prompts/tasks";
+import { numbers } from "../config/numbers";
+import { configure, configCommand } from "./configuration";
 import { chatInstructions } from "./chat-instructions";
 import { activityHelp, activityInstructions } from "./activity-instructions";
 import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
-import { chatContacts, identityFor, inboxWhere, interactionContext, maxBurst, nextInbox, nextFriendPromise, readBurst, relatedPeers, type ChatContact } from "./conversation";
+import { chatContacts, identityFor, inboxWhere, interactionContext, nextInbox, nextFriendPromise, readBurst, relatedPeers, type ChatContact } from "./conversation";
 import { chatContext, chatMemoryText, chatRecallCue, fitChatPrompt } from "./chat-context";
 import { z } from "zod";
 import {
   dayOf,
   hourOf,
   initialSelf,
-  firstName,
   residentId,
   type State,
 } from "../content/initial";
@@ -18,6 +25,7 @@ import {
   db,
   commit,
   currentSetting,
+  currentOverrides,
   house,
   memory,
   one,
@@ -58,7 +66,7 @@ import { personalReading } from "./reading-progress";
 import { discoveryDesk } from "./discovery";
 import { upgradeExperience } from "./experience-migration";
 import { readingOutcome, sourceNames } from "../content/activity";
-import { currentRest, defaultRestMinutes, restContext } from "./rest";
+import { currentRest, restContext } from "./rest";
 import { reflectionActivities, ReflectionInputError, reflectionTarget } from "./reflection";
 
 const hour = 3600000;
@@ -71,7 +79,8 @@ const planEvidenceSql=`CASE WHEN ? IS NULL OR EXISTS(SELECT 1 FROM json_each(evi
   THEN evidence ELSE json_insert(evidence,'$[#]',?) END`;
 const focusedRead=(q?:ReadRequest)=>q?.id && ["open","frames","subtitles","comments","image"].includes(q.action)
   ? {source:q.source,id:q.id,page:q.action==="comments"?undefined:q.page} : undefined;
-const imports = () => ({
+const imports = (state:State) => ({
+  overrides:state.config,
   biliCookie: env.BILI_COOKIE,
   heyCookie: env.HEYBOX_COOKIE,
 });
@@ -89,16 +98,16 @@ export async function arrange(state:State,raw:unknown) {
 const mediaSchema = z.object({
   source: z.enum(readingSources),
   action: z.enum(readActions),
-  query: z.string().max(70).optional(),
-  id: z.string().max(560).optional(),
-  root: z.string().max(22).optional(),
-  page: z.number().int().min(1).max(10000).optional(),
-  offset:z.number().int().min(0).max(50000).optional(),
+  query: z.string().max(numbers.defaults.mediaQueryChars).optional(),
+  id: z.string().max(numbers.defaults.mediaIdChars).optional(),
+  root: z.string().max(numbers.defaults.mediaRootChars).optional(),
+  page: z.number().int().min(1).max(numbers.defaults.mediaPageMax).optional(),
+  offset:z.number().int().min(0).max(numbers.defaults.mediaOffsetMax).optional(),
   cursor: historyCursor.optional(),
 });
 const actionSchema = z.object({
   action: z.enum([
-    "help",
+    "config", "help",
     "rest",
     "read",
     "draw",
@@ -118,6 +127,7 @@ const actionSchema = z.object({
   ]),
   play:z.object({game:z.enum(gameKinds),op:z.enum(["start","look","move","pause","resume","restart","next"]),
     id:z.string().max(80).optional(),move:z.string().max(12).optional(),note:z.string().max(180).optional()}).optional(),
+  config:configCommand.optional(),
   site:studioSchema.optional(),
   object:z.unknown().optional(),
   visibility:z.enum(["hidden","summary","detail"]).optional(),
@@ -126,7 +136,7 @@ const actionSchema = z.object({
   minutes: z.preprocess(v=>typeof v==="number" || (typeof v==="string" && v.trim()!=="") ?
     (Number.isFinite(Number(v)) ? Math.min(720,Math.max(1,Math.round(Number(v)))) : undefined) : undefined,z.number().optional()),
   readingGoal:z.enum(readingGoals).optional(),
-  target:z.object({source:z.enum(readingSources),id:z.string().max(560).optional(),page:mediaSchema.shape.page}).optional(),
+  target:z.object({source:z.enum(readingSources),id:z.string().max(numbers.defaults.mediaIdChars).optional(),page:mediaSchema.shape.page}).optional(),
   archive:z.object({kind:z.enum(["activity","dream"]),query:z.string().max(120).optional(),date:z.iso.date().optional(),
     offset:z.number().int().nonnegative().default(0)}).optional(),
   describe:z.boolean().optional(),
@@ -159,9 +169,10 @@ export function rankMemories(
   rows: Memory[],
   cue: string,
   now: number,
-  limit = 12,
+  limit = numbers.defaults.memoryCount,
   semantic = new Map<string,number>(),
   relevantOnly = false,
+  n = numbers.defaults,
 ) {
   const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
   const words = (s: string) => {
@@ -178,12 +189,12 @@ export function rankMemories(
     let overlap = 0;
     const searchText=m.kind==="episode"?[m.body,m.quote,m.details].filter(Boolean).join(" "):m.body;
     for (const t of words(searchText)) if (keys.has(t)) overlap++;
-    const semanticScore = Math.max(0, (semantic.get(m.id) ?? 0) - 0.34) * 36;
+    const semanticScore = Math.max(0, (semantic.get(m.id) ?? 0) - n.memorySimilarity) * n.semanticWeight;
     if (relevantOnly && !overlap && !semanticScore) return 0;
     return (
-      Math.min(overlap, 14) * 1.3 + semanticScore +
-      4 / (1 + age / 18) +
-      (m.kind === "promise" && !m.resolved ? 5 : 0) +
+      Math.min(overlap, n.keywordLimit) * n.keywordWeight + semanticScore +
+      n.recencyWeight / (1 + age / n.recencyHours) +
+      (m.kind === "promise" && !m.resolved ? n.promiseWeight : 0) +
       (m.kind === "understanding" || m.kind === "style" ? 1 : 0)
     );
   };
@@ -197,7 +208,7 @@ export function rankMemories(
   for(const m of ranked) {
     const terms=words(m.body);
     if(chosen.some((other,i)=>other.body===m.body || (other.kind===m.kind && terms.size>5 &&
-      [...terms].filter(k=>fingerprints[i].has(k)).length/Math.max(terms.size,fingerprints[i].size)>.78))) continue;
+      [...terms].filter(k=>fingerprints[i].has(k)).length/Math.max(terms.size,fingerprints[i].size)>n.similarMemoryRatio))) continue;
     chosen.push(m);fingerprints.push(terms);
     if(chosen.length>=limit) break;
   }
@@ -248,6 +259,7 @@ export async function recall(scopes: string[], cue: string, now: number, exclude
     ),
     semanticHits(scopes, cue, excludeIds).catch(() => []),
   ]);
+  const n=numbers.read(await currentOverrides());
   const ranked=rankMemories(
     [
       ...new Map(
@@ -256,13 +268,13 @@ export async function recall(scopes: string[], cue: string, now: number, exclude
     ],
     cue,
     now,
-    12, new Map(semantic.map(hit=>[hit.memory.id,hit.score])), relevantOnly,
+    n.memoryCount, new Map(semantic.map(hit=>[hit.memory.id,hit.score])), relevantOnly, n,
   );
-  return [...new Map([...temporal,...ranked].map(m=>[m.id,m])).values()].slice(0,12);
+  return [...new Map([...temporal,...ranked].map(m=>[m.id,m])).values()].slice(0,n.memoryCount);
 }
 export async function versions() {
   return all<Setting>(
-    "SELECT v.* FROM agent_versions v WHERE v.rowid=(SELECT n.rowid FROM agent_versions n WHERE n.name=v.name ORDER BY made DESC,rowid DESC LIMIT 1) AND v.name NOT LIKE 'cabin/%' AND v.value<>'' ORDER BY name LIMIT 90",
+    "SELECT v.* FROM agent_versions v WHERE v.rowid=(SELECT n.rowid FROM agent_versions n WHERE n.name=v.name ORDER BY made DESC,rowid DESC LIMIT 1) AND v.name NOT LIKE 'cabin/%' AND v.name NOT LIKE 'config/%' AND v.value<>'' ORDER BY name LIMIT 90",
   );
 }
 function remembered(rows: Memory[]) {
@@ -309,15 +321,15 @@ async function paint(t: Turn, scope: string, idea: string, style: string, refere
   let previous:Uint8Array<ArrayBuffer>|undefined;
   if(baseArt) {
     const pic=await one<{png:number[]|Uint8Array|null;svg:string}>("SELECT png,svg FROM drawings WHERE id=? AND scope IN ('public',?)",baseArt,scope);
-    if(!pic) throw Error("找不到这次续画选中的原图");
+    if(!pic) throw Error(lifeErrors.missingOriginal);
     previous=pic.png?Uint8Array.from(pic.png):Uint8Array.from(await (await import("./png")).renderPNG(pic.svg));
   }
-  let png = await drawImage(idea, style, t.now, previous?{image:previous,instruction:idea}:undefined, reference);
+  let png = await drawImage(idea, style, t.now, previous?{image:previous,instruction:idea}:undefined, reference,t.state.config);
   const draft=png;
-  let title = clip(idea, 60) || "小画";
+  let title = clip(idea, 60) || texts.read(t.state.config).drawingTitle;
   try {
     const review = await think(
-      "看你刚画的小表情，给它起一个简短的标题。若想修正明显的构图或动作问题，在 revision 写一句具体修改，否则省略。返回 JSON {title,revision?:string}。",
+      drawingReview,
       { idea },
       t.now,
       "activity",
@@ -325,9 +337,9 @@ async function paint(t: Turn, scope: string, idea: string, style: string, refere
       "drawing_review",
     );
     title = clip(review.title, 60) || title;
-    const instruction = clip(review.revision, 240);
+    const instruction = clip(review.revision, numbers.read(t.state.config).drawingReviewChars);
     if (instruction)
-      png = await drawImage(idea, style, t.now, { image: png, instruction }, reference);
+      png = await drawImage(idea, style, t.now, { image: png, instruction }, reference,t.state.config);
   } catch (error) {
     remember(t, scope === siteScope ? privateScope : scope, "access",
       "动作 绘画复核或修订 未完成，已保留初稿，原因 " + failureReason(error) + "。");
@@ -366,21 +378,21 @@ async function queuePainting(t:Turn,scope:string,idea:string,style:string,refere
   let work:{id:string}|null=null;
   if(workId && peer) {
     const selected=await one<{id:string;state:string}>("SELECT id,state FROM works WHERE id=? AND scope=? AND kind='drawing' AND state IN ('active','done','shelved')",workId,scope);
-    if(!selected) throw Error("找不到这段对话里的那幅画。");
+    if(!selected) throw Error(lifeErrors.missingConversationArt);
     const paused=await one("SELECT id FROM art_jobs WHERE work=? AND scope=? AND state='paused'",workId,scope);
-    if(paused) throw Error("这幅画还有搁置的画稿，先恢复原任务就能继续。");
+    if(paused) throw Error(lifeErrors.pausedDrawing);
     baseArt=(await one<{art:string}>(`SELECT art FROM (
       SELECT d.id AS art,s.made,s.rowid AS seq FROM work_steps s JOIN drawings d ON d.id=s.art AND d.scope=?
       WHERE s.work=? UNION ALL SELECT d.id,j.made,j.rowid FROM art_jobs j JOIN drawings d ON d.id=j.art AND d.scope=?
       WHERE j.work=? AND j.scope=?) ORDER BY made DESC,seq DESC LIMIT 1`,scope,workId,scope,workId,scope))?.art??null;
-    if(selected.state==="done" && !baseArt) throw Error("这幅画的原稿暂时找不到。");
+    if(selected.state==="done" && !baseArt) throw Error(lifeErrors.draftMissing);
     work=selected;
     closeAfter=selected.state==="done";
     if(selected.state!=="active") t.writes.push(stmt("UPDATE works SET state='active',updated=? WHERE id=? AND scope=?",t.now,workId,scope));
   }
   if(workId && !peer) {
     const selected=await findOwnWork(workId);
-    if(!selected || selected.kind!=="drawing") throw Error("找不到选中的绘画作品");
+    if(!selected || selected.kind!=="drawing") throw Error(lifeErrors.workMissing);
     if(selected.scope==="self") scope="self";
     baseArt=selected.art ?? (await one<{art:string}>("SELECT art FROM work_steps WHERE work=? AND art IS NOT NULL ORDER BY made DESC,rowid DESC LIMIT 1",workId))?.art ?? null;
     if(selected.loose && scope===selected.scope) adoptedId=workId;
@@ -393,7 +405,7 @@ async function queuePainting(t:Turn,scope:string,idea:string,style:string,refere
     }
   }
   if(work && await one("SELECT id FROM art_jobs WHERE work=? AND scope=? AND state IN ('pending','running','ready')",work.id,scope))
-    throw Error("这件作品已有待处理的画稿");
+    throw Error(lifeErrors.draftPending);
   const created=work?null:newWork(scope,idea,"drawing","画第一稿",t.now,adoptedId);
   if(created) {
     t.writes.push(created.write);
@@ -426,7 +438,7 @@ async function runPainting(now:number) {
     const base=await one<{value:string}>("SELECT value FROM channel_state WHERE id=?","art-base/"+job.id);
     const art=job.art??await paint(t,job.scope,job.idea,job.style,job.reference??undefined,job.work??undefined,job.origin??undefined,base?.value);
     const proof=t.newMem.find(m=>m.kind==="drawing")??await one<Memory>("SELECT * FROM memories WHERE scope=? AND kind='drawing' AND source=? AND hidden=0",job.scope,"/picture/"+art);
-    if(!proof) throw Error("画作缺少可见记录");
+    if(!proof) throw Error(lifeErrors.hiddenArt);
     const identity=job.scope.slice(5);
     const promise=job.promise_id?await one<{due:number|null}>("SELECT due FROM memories WHERE id=? AND scope=? AND kind='promise' AND hidden=0 AND resolved=0",job.promise_id,job.scope):null;
     // A drawing requested from the retired site still belongs in its private archive.
@@ -473,11 +485,11 @@ async function runPainting(now:number) {
   }
 }
 async function perceive(t: Turn, q: ReadRequest, scope=privateScope) {
-  const result = await readMedia(q, imports());
+  const result = await readMedia(q, imports(t.state));
   const picture=q.action==="frames"?result.frames?.[0]:undefined;
   if(result.status==="ok" && picture) {
     try {
-      const view=await think("只描述这一张动画分镜拼图中看得到的画面。返回 {description}。",
+      const view=await think(storyboard,
         {title:result.items[0].title},t.now,"activity",picture,"storyboard_vision");
       if(clip(view.description)) {
         result.level="storyboard_viewed";
@@ -528,16 +540,17 @@ async function execute(
   contacts: ChatContact[],
 ) {
   const s = t.state;
+  const n = numbers.read(s.config), copy=texts.read(s.config);
   const continuingRest = a.action === "rest" ? await currentRest(s,t.now) : undefined;
   endActivity(t);
-  s.activity = "在小屋";
+  s.activity = copy.atHome;
   const ink =
-    defs.find((v) => v.name === "style")?.value || "自由手绘，轮廓清楚";
+    defs.find((v) => v.name === "style")?.value || copy.drawingStyle;
   const startName = s.name;
-  const interactive=["help","play","read","site","archive","object"].includes(a.action) || (a.action==="work" && (a.work as {action?:string})?.action==="browse");
-  const quick=interactive && a.minutes===undefined && (s.quickSteps??0)<3;
+  const interactive=["config","help","play","read","site","archive","object"].includes(a.action) || (a.action==="work" && (a.work as {action?:string})?.action==="browse");
+  const quick=interactive && a.minutes===undefined && (s.quickSteps??0)<n.quickSteps;
   s.quickSteps=quick ? (s.quickSteps??0)+1 : 0;
-  s.nextAt=t.now+(quick ? 2000 : (a.minutes??(a.action==="rest"?defaultRestMinutes:interactive?5:50))*60000);
+  s.nextAt=t.now+(quick ? n.quickDelayMs : (a.minutes??(a.action==="rest"?n.restMinutes:interactive?n.interactiveMinutes:n.idleMinutes))*60000);
   const visibility=a.visibility??s.sharing??"detail";
   const scope=visibility==="detail" && !["summary","hidden"].includes(s.sharing??"detail")?siteScope:privateScope;
   if (a.action!=="sleep" && a.action!=="get_up") {
@@ -547,57 +560,62 @@ async function execute(
     } else if (a.posture==="up" || a.action==="room") leaveBed(t,scope);
   }
   if (s.inBed) {
-    s.activity="醒着，在床上躺一会儿";
+    s.activity=copy.inBed;
     if (a.visibility==="hidden") s.bedVisibility="hidden";
   }
   let outcome: Outcome;
   let readResult:Observation|undefined;
-  let receiptScope=["help","object","archive","site","revise","rollback","request_mcp","use_mcp","use_tool","alarm","chat"].includes(a.action) ? privateScope : scope;
+  let receiptScope=["config","help","object","archive","site","revise","rollback","request_mcp","use_mcp","use_tool","alarm","chat"].includes(a.action) ? privateScope : scope;
   let progress:{id:string;complete:boolean}|undefined;
   let planKind:string=a.action;
   let planScope=scope;
   switch (a.action) {
+    case "config": {
+      const result = await configure(s, a.config, t.now, t.writes);
+      outcome = {status:"done", summary:configReceipts[a.config!.op], result};
+      break;
+    }
     case "help": {
       const name = a.name && actionSchema.shape.action.parse(a.name);
       const result = name ? { name, usage: activityHelp[name],
         ...(name==="reflect"?{activities:await reflectionActivities()}: {}),
         ...(name==="work"?await workEvidenceChoices((a.work as {id?:unknown})?.id ?? s.focusWork): {}) } : { actions: actionSchema.shape.action.options };
-      outcome = { status: "done", summary: "查看了" + (name ?? "日常动作") + "的用法。", result };
+      outcome = { status: "done", summary: formatText(copy.helpRead, {action:name ?? copy.dailyActions}), result };
       break;
     }
     case "play": {
-      if(!a.play) throw Error("缺少游戏指令");
+      if(!a.play) throw Error(lifeErrors.gameCommand);
       const id=crypto.randomUUID();
       const result=await play(t,a.play,id);
       record(t,result,a.visibility,id);
       if(["start","restart","next"].includes(a.play.op) || (a.play.op==="move" && result.moved))
         progress={id,complete:!!result.game.result};
-      outcome={status:result.moved===false?"skipped":"done",summary:a.play.op==="look"?"查看了游戏存档。":result.game.feedback,ref:id,
+      outcome={status:result.moved===false?"skipped":"done",summary:a.play.op==="look"?copy.gameSaveViewed:result.game.feedback,ref:id,
         result:{id,activityId:id,save:result.save,saveId:result.save,feedback:result.game.feedback,result:result.game.result}};
       break;
     }
     case "share":
       s.shareEpoch=crypto.randomUUID();
-      if(!a.visibility) throw Error("要设置公开程度");
+      if(!a.visibility) throw Error(lifeErrors.visibility);
       if(a.evidenceId) {
-        if(!await one("SELECT 1 FROM activities WHERE id=?",a.evidenceId)) throw Error("找不到这次活动");
+        if(!await one("SELECT 1 FROM activities WHERE id=?",a.evidenceId)) throw Error(lifeErrors.activityMissing);
         t.writes.push(stmt("UPDATE activities SET visibility=? WHERE id=?",a.visibility,a.evidenceId));
       } else s.sharing=a.visibility;
-      outcome={status:"done",summary:"已调整"+(a.evidenceId?"这次活动":"今后活动")+"的公开程度。",ref:a.evidenceId,
+      outcome={status:"done",summary:a.evidenceId ? copy.changedItemVisibility : copy.changedDefaultVisibility,ref:a.evidenceId,
         result:{visibility:a.visibility,id:a.evidenceId}};break;
     case "reflect": {
       const target = await reflectionTarget(a.evidenceId,a.idea);
       s.shareEpoch=crypto.randomUUID();
       t.writes.push(stmt("UPDATE activities SET detail=json_set(detail,'$.remark',?) WHERE id=?",a.idea!.trim(),target));
-      outcome={status:"done",summary:"给这次活动留下了感想。",ref:target,result:{annotated:target,remark:a.idea!.trim()}};
+      outcome={status:"done",summary:copy.reflected,ref:target,result:{annotated:target,remark:a.idea!.trim()}};
       if (a.question===null && s.question) remember(t,privateScope,"understanding",
         "曾经的问题："+s.question.text+"\n自己留下的看法："+a.idea!.trim(),{evidence:JSON.stringify([target])});
       break;
     }
     case "archive": {
-      if(!a.archive) throw Error("请选活动或梦境档案");
+      if(!a.archive) throw Error(lifeErrors.archiveKind);
       const {kind,query,date,offset}=a.archive;
-      outcome={status:"done",summary:"翻阅了自己的档案。",result:await browseActivityArchive(kind,query??"",date,offset)};
+      outcome={status:"done",summary:copy.archiveViewed,result:await browseActivityArchive(kind,query??"",date,offset)};
       break;
     }
     case "object": {
@@ -642,31 +660,31 @@ async function execute(
     case "site": {
       const edited=await editSite(a.site,t.now,publicHome,"resident");
       t.writes.push(...edited.writes);
-      outcome={status:"done",summary:"完成了小站操作 "+a.site!.op+"。",result:edited.result};
+      outcome={status:"done",summary:formatText(copy.siteEdited, {operation:a.site!.op}),result:edited.result};
       break;
     }
     case "journal": {
-      const everyDays=a.journal==="habit"?a.everyDays:s.journalHabit?.everyDays??1;
-      if(everyDays===undefined || !a.journal) throw Error("请给出写作习惯或这次选择");
+      const everyDays=a.journal==="habit"?a.everyDays:s.journalHabit?.everyDays??n.fallbackJournalDays;
+      if(everyDays===undefined || !a.journal) throw Error(lifeErrors.journalChoice);
       const publication=a.journal==="write"?await publish(t,defs):undefined;
       planKind="writing";
       if(publication==="published") progress={id:dayOf(t.now),complete:true};
       s.journalHabit={everyDays,nextDay:dayOf(t.now+Math.max(everyDays,1)*24*hour)};
       const skipped = a.journal==="skip" || publication==="already_written";
-      const summary = publication==="published" ? "发布了今天的站内动态。" : publication==="already_written" ? "今天已有动态。" :
-        a.journal==="skip" ? "这次略过了写动态。" : "已更新写动态的习惯。";
+      const summary = publication==="published" ? copy.journalPublished : publication==="already_written" ? copy.journalExists :
+        a.journal==="skip" ? copy.skippedJournal : copy.changedJournalHabit;
       outcome={status:skipped?"skipped":"done",summary,result:{journal:a.journal,everyDays,publication}}; break;
     }
     case "chat": {
       const contact = typeof a.contact==="string" ? contacts.find(c=>c.alias===a.contact) : contacts[(a.contact ?? 0) - 1];
-      if (!contact) throw Error("没有选中可联系的好友");
+      if (!contact) throw Error(lifeErrors.contactMissing);
       const response = await respond(t, contact.peer, [], defs, a.idea);
       receiptScope=scopeFor(contact.identity);
       outcome = chatOutcome(response.status,response.id);
       break;
     }
     case "read":
-      if (!a.media) throw Error("未选择媒体");
+      if (!a.media) throw Error(lifeErrors.mediaMissing);
       {
         const result = readResult = await perceive(t, a.media);
         if(result.resolved) a.media={...a.media,...result.resolved};
@@ -675,7 +693,7 @@ async function execute(
         const id=detail?record(t,detail,a.visibility,undefined,a.media.id):undefined;
         if (result.status!=="ok") {
           s.currentActivity=undefined;
-          s.activity=s.inBed?"醒着，在床上躺一会儿":"在小屋";
+          s.activity=s.inBed?copy.inBed:copy.atHome;
         }
         const work=z.object({id:z.string().max(100),next:z.string().max(240).optional()}).safeParse(a.work);
         const attached = a.work===undefined ? undefined : id && result.status==="ok" && work.success ?
@@ -683,22 +701,22 @@ async function execute(
         if(attached) t.writes.push(...attached.writes);
         if (result.status==="ok" || result.nextPage) t.writes.push(readingBookmark(a.media,result,t.now,attached?.attached?work.data?.id:undefined));
         const first = !isBiliAccountRead(a.media) && result.items[0]?.title;
-        const fact = isBiliAccountRead(a.media) && result.status==="ok" ? (a.media.action==="history"?"翻了账号观看历史":"翻了账号稍后再看") :
+        const fact = isBiliAccountRead(a.media) && result.status==="ok" ? (a.media.action==="history"?copy.readHistory:copy.readLater) :
           readingOutcome({source:a.media.source,action:a.media.action,level:result.level,status:result.status});
         outcome={status:result.status==="ok"?"done":"failed",ref:id,summary:sourceNames[a.media.source]+" · "+fact+"。"+(first?"《"+first+"》":"")+(attached ? attached.attached?" 已归入作品。":" 未归档。"+attached.reason:""),
           result:{id,level:result.level,status:result.status,items:result.items.map(i=>({...i,body:result.status==="ok"?i.body.slice(0,["article","subtitles"].includes(result.level)?3200:1000):""})),
             work:attached && {attached:attached.attached,reason:attached.reason},comments:detail?.comments,filteredCount:result.filteredCount,coverage:result.coverage,nextOffset:result.nextOffset,atEnd:result.atEnd,nextCursor:result.nextCursor,nextPage:result.nextPage}};
         if (isBiliAccountRead(a.media)) {
-          s.activity = result.status === "ok" ? (a.media.action === "history" ? "在翻 B 站观看历史" : "在翻 B 站稍后再看") : "在小屋";
+          s.activity = result.status === "ok" ? (a.media.action === "history" ? copy.historyStatus : copy.watchLaterStatus) : copy.atHome;
         }
       }
       break;
     case "draw": {
-      const idea=a.idea || "今天的小表情";
+      const idea=a.idea || copy.drawingIdea;
       const job=await queuePainting(t,scope,idea,ink,a.reference,undefined,undefined,a.name);
       planScope=receiptScope=job.scope;
-      record(t,{kind:"draw",description:"在画画"},a.visibility,job.id);
-      outcome={status:"queued",summary:"画稿已排队："+idea,ref:job.id,result:{jobId:job.id,workId:job.workId,activityId:job.id}};
+      record(t,{kind:"draw",description:copy.drawStatus},a.visibility,job.id);
+      outcome={status:"queued",summary:formatText(copy.drawingQueued, {idea}),ref:job.id,result:{jobId:job.id,workId:job.workId,activityId:job.id}};
       break;
     }
     case "room":
@@ -707,20 +725,20 @@ async function execute(
         const what=moved.summary;
         t.writes.push(...moved.writes);
         remember(t, scope, "event", what + "。");
-        const id=record(t,{kind:"room",description:"在整理小屋"},a.visibility);
+        const id=record(t,{kind:"room",description:copy.arrangeStatus},a.visibility);
         outcome={status:"done",summary:what+"。",ref:id};
       }
       break;
     case "rename":
       {
         const name = clip(a.name, 40);
-        if (!name) throw Error("站名为空");
+        if (!name) throw Error(lifeErrors.emptyName);
         s.name = name;
         const event=remember(
           t,
           siteScope,
           "event",
-          "把小站从「" + startName + "」改名为「" + name + "」。",
+          formatText(copy.siteRenamed, {old:startName,name}),
         );
         outcome={status:"done",summary:event.body,ref:event.id};
       }
@@ -733,8 +751,8 @@ async function execute(
             reading:(a.name==="read" || a.readingGoal || a.target)?planReading(a.idea,a.readingGoal,a.target??a.media):undefined})});
         remember(t,privateScope,"promise",a.idea,{quote,due,category:"planned",details:JSON.stringify({planId:plan.id})});
         if(due!==null && due>t.now) s.nextAt=Math.min(s.nextAt,due);
-        outcome={status:"planned",summary:"记下了打算："+a.idea,ref:plan.id};
-      } else outcome={status:"skipped",summary:"这次没有记下计划。"};
+        outcome={status:"planned",summary:formatText(copy.planSaved, {idea:a.idea!}),ref:plan.id};
+      } else outcome={status:"skipped",summary:copy.skipPlan};
       break;
     case "work": {
       const request=a.work as {action?:string;id?:string;query?:string;offset?:number}|undefined;
@@ -742,7 +760,7 @@ async function execute(
         receiptScope=privateScope;
         const offset=Number.isSafeInteger(request.offset) && request.offset!>=0?request.offset!:0;
         const result=await browseOwnWorks(clip(request.query,100),offset);
-        outcome={status:"done",summary:result.items.length?"翻到了这些旧作。":"这一次没有找到相符的旧作。",result};
+        outcome={status:"done",summary:result.items.length?copy.foundWorks:copy.emptyWorks,result};
         break;
       }
       const selected=typeof request?.id==="string" && await findOwnWork(request.id.trim());
@@ -759,8 +777,8 @@ async function execute(
       const dream=await one<Memory>("SELECT * FROM memories WHERE id=? AND kind='dream' AND scope='self'",a.evidenceId??"");
       if(dream && !dream.hidden && !await one("SELECT 1 FROM memories WHERE id=?","shared-"+dream.id)) {
         const shared=remember(t,siteScope,"shared_dream",dream.body,{id:"shared-"+dream.id});
-        outcome={status:"done",summary:"把这个梦分享到了小屋。",ref:shared.id};
-      } else outcome={status:"skipped",summary:dream?"这个梦已经分享过了。":"没有找到这个梦。"};
+        outcome={status:"done",summary:copy.sharedDream,ref:shared.id};
+      } else outcome={status:"skipped",summary:dream?copy.dreamAlreadyShared:copy.dreamMissing};
       break;
     }
     case "resolve": {
@@ -775,16 +793,16 @@ async function execute(
           }
           t.writes.push(stmt(`UPDATE memories SET category='done',details=json_set(details,'$.reason','自己标记为完成。','$.selfConfirmed',1)
             WHERE id=? AND kind='day_plan' AND scope IN ('self','public') AND category IN ('planned','started')`,pending.planId));
-          outcome={status:"done",summary:"给这项打算做了完成标记。",ref:pending.planId};
+          outcome={status:"done",summary:copy.planConfirmed,ref:pending.planId};
         } else {
           t.writes.push(stmt("UPDATE memories SET resolved=1 WHERE id=? AND kind='promise' AND scope='self'",a.evidenceId));
-          outcome={status:"done",summary:"已给这项约定做了完成标记。",ref:a.evidenceId};
+          outcome={status:"done",summary:copy.promiseConfirmed,ref:a.evidenceId};
         }
-      } else outcome={status:"skipped",summary:"没有找到这项待办约定。"};
+      } else outcome={status:"skipped",summary:copy.promiseMissing};
       break;
     }
     case "alarm": {
-      if (!a.alarm) throw Error("缺少闹钟操作");
+      if (!a.alarm) throw Error(lifeErrors.alarmCommand);
       const summary=setAlarm(s,a.alarm,t.now);
       const event=remember(t,privateScope,"event",summary);
       outcome={status:"done",summary,ref:event.id};
@@ -792,8 +810,8 @@ async function execute(
     }
     case "get_up": {
       const event=leaveBed(t,scope);
-      s.activity="在小屋";
-      outcome=event?{status:"done",summary:event.body,ref:event.id}:{status:"skipped",summary:"已经起来了。"};
+      s.activity=copy.atHome;
+      outcome=event?{status:"done",summary:event.body,ref:event.id}:{status:"skipped",summary:copy.alreadyUp};
       break;
     }
     case "sleep": {
@@ -803,7 +821,7 @@ async function execute(
         catch (error) { bell="闹钟没有调好。"+actionProblem(error); }
       }
       const slept=await goToSleep(t,defs,visibility);
-      outcome={status:slept?"started":"skipped",summary:(slept?"睡着了。":"翻了个身，仍然醒着。")+bell,ref:s.currentActivity};
+      outcome={status:slept?"started":"skipped",summary:(slept?copy.fellAsleep:copy.stillAwake)+bell,ref:s.currentActivity};
       break;
     }
     case "revise": {
@@ -821,19 +839,20 @@ async function execute(
         await testRecipe(a.value);
         value = JSON.stringify(recipe.parse(a.value));
       }
-      if (!value) throw Error("修改限于角色设定和工具箱");
+      if (!value) throw Error(lifeErrors.restrictedSetting);
       const old = await currentSetting(name);
       t.writes.push(saveVersion(name, value, old?.id ?? null, t.now));
-      remember(t, privateScope, "skill", "更新了 " + name + "。");
-      outcome={status:"done",summary:"更新了 "+name+"。"};
+      remember(t, privateScope, "skill", formatText(copy.settingUpdated, {name}));
+      outcome={status:"done",summary:formatText(copy.settingUpdated, {name})};
       break;
     }
     case "rollback": {
+      if (a.name?.startsWith("config/") || a.name?.startsWith("cabin/")) throw Error(lifeErrors.useConfigRollback);
       const current = await currentSetting(a.name || "");
-      if (!current || (!current.parent && !current.value)) throw Error("已经是初始设置");
+      if (!current || (!current.parent && !current.value)) throw Error(lifeErrors.initialVersion);
       if(!current.parent) {
         t.writes.push(saveVersion(current.name,"",null,t.now));
-        outcome={status:"done",summary:"恢复了 "+current.name+" 的初始设置。"};
+        outcome={status:"done",summary:formatText(copy.initialSetting, {name:current.name})};
         break;
       }
       const parent = await one<Setting>(
@@ -841,22 +860,22 @@ async function execute(
         current.parent,
         current.name,
       );
-      if (!parent) throw Error("版本不存在");
+      if (!parent) throw Error(lifeErrors.versionMissing);
       t.writes.push(
         saveVersion(current.name, parent.value, parent.parent, t.now),
       );
-      outcome={status:"done",summary:"已把 "+current.name+" 恢复到先前版本。",ref:parent.id};
+      outcome={status:"done",summary:formatText(copy.settingRestored, {name:current.name}),ref:parent.id};
       break;
     }
     case "use_tool": {
       const tool = defs.find(
         (x) => x.name === a.name && x.name.startsWith("tool-"),
       );
-      if (!tool) throw Error("工具不存在");
+      if (!tool) throw Error(lifeErrors.toolMissing);
       const { definition, problem } = storedRecipe(tool.value);
       if (!definition) throw Error(problem);
       if (a.describe) {
-        outcome={status:"done",summary:"查看了 "+tool.name+" 的做法。",result:definition};
+        outcome={status:"done",summary:formatText(copy.toolExplained, {name:tool.name}),result:definition};
         break;
       }
       const result = await runRecipe(definition, a.idea ?? "", {
@@ -870,7 +889,7 @@ async function execute(
         draw: async idea=>"已加入绘图队列 "+(await queuePainting(t,scope,idea,ink,a.reference)).id,
       });
       remember(t, privateScope, "tool", result.join("\n").slice(0, 750));
-      outcome={status:"done",summary:"用过了 "+tool.name+"。",result:result.join("\n").slice(0,750)};
+      outcome={status:"done",summary:formatText(copy.usedRecipe, {name:tool.name}),result:result.join("\n").slice(0,750)};
       break;
     }
     case "request_mcp": {
@@ -885,7 +904,7 @@ async function execute(
         !clip(value.purpose) ||
         !/^https:\/\//.test(clip(value.url))
       )
-        throw Error("工具申请不完整");
+        throw Error(lifeErrors.incompleteRequest);
       const alias = toolName.parse(a.name);
       t.writes.push(
         stmt(
@@ -900,30 +919,30 @@ async function execute(
         ),
       );
       remember(t, privateScope, "skill", "想请站主接入 " + alias + "。");
-      outcome={status:"queued",summary:"已留下接入 "+alias+" 的申请。"};
+      outcome={status:"queued",summary:formatText(copy.toolRequested, {name:alias})};
       break;
     }
     case "use_mcp": {
       const { callInstalled, describeInstalled } = await import("./remote-tools");
       if(a.describe) {
-        outcome={status:"done",summary:"查看了工具参数。",result:await describeInstalled(a.name??"")};
+        outcome={status:"done",summary:copy.toolParameters,result:await describeInstalled(a.name??"")};
         break;
       }
       const result = await callInstalled(a.name ?? "", a.value);
       remember(t, privateScope, "tool", clip(result, 850));
-      outcome={status:"done",summary:"已调用 "+a.name+"。",result:clip(result,850)};
+      outcome={status:"done",summary:formatText(copy.remoteCalled, {name:a.name ?? ""}),result:clip(result,850)};
       break;
     }
     case "rest": {
-      const description=s.inBed?"醒着，在床上躺一会儿":"在小屋里歇一会儿";
+      const description=s.inBed?copy.inBed:copy.resting;
       const posture=s.inBed?"in_bed" as const:"up" as const;
       const since=continuingRest?.posture===posture?continuingRest.since:t.now;
       const minutes=(s.nextAt-t.now)/60000;
       const rest={since,posture,minutes,timing:a.minutes===undefined?"default" as const:"chosen" as const};
       const ref=record(t,{kind:"rest",description,rest},a.visibility);
       const elapsed=Math.floor(Math.max(0,t.now-since)/60000);
-      outcome={status:"started",summary:description+"。"+(elapsed?"已连续休息 "+elapsed+" 分钟，":"")+
-        (a.minutes===undefined?"未指定时长，先歇 ":"这次再歇 ")+minutes+" 分钟，"+shanghaiDate(s.nextAt)+" 再想做什么。",
+      outcome={status:"started",summary:description+"。"+(elapsed?formatText(copy.continuedRest, {elapsed}):"")+
+        (a.minutes===undefined?copy.defaultRestLead:copy.chosenRestLead)+formatText(copy.nextThought, {minutes,time:shanghaiDate(s.nextAt)}),
         ref,result:{rest:{...restContext({since,posture},s,t.now),minutes,timing:rest.timing}}};
       break;
     }
@@ -986,9 +1005,9 @@ function setMood(s:State,value:{label:string;cause:string;strength:number;hours:
   s.feeling={label:value.label,cause:value.cause,strength:value.strength,since:now,until:now+value.hours*hour};
 }
 function currentMood(s:State,now:number) {
-  if(!s.feeling) return {label:s.mood || "平静",strength:0.25};
+  if(!s.feeling) return {label:s.mood || texts.read(s.config).neutralMood,strength:0.25};
   const f=s.feeling,remaining=Math.max(0,Math.min(1,(f.until-now)/(f.until-f.since)));
-  return remaining?{label:f.label,cause:f.cause,strength:Math.round(f.strength*remaining*100)/100}:{label:"平静",strength:0};
+  return remaining?{label:f.label,cause:f.cause,strength:Math.round(f.strength*remaining*100)/100}:{label:texts.read(s.config).neutralMood,strength:0};
 }
 function commentSamples(rows: Memory[]) {
   return rows.filter(m=>(m.scope==="public" || m.scope==="self") && m.kind==="observation" && m.body.startsWith("bili / filtered_comments ·")).flatMap(m=>
@@ -1064,7 +1083,7 @@ async function applySleepInteraction(t:Turn,defs:Setting[],raw:unknown) {
   }
   if(choice==="get_up") {
     leaveBed(t,scope);
-    state.activity="在小屋";
+    state.activity=texts.read(state.config).atHome;
   } else if(choice==="sleep" && state.mode==="awake") await goToSleep(t,defs,visibility);
   return {choice,before,after:state.mode,inBed:!!state.inBed,sessionStarted,at:t.now};
 }
@@ -1073,7 +1092,7 @@ async function goToSleep(t: Turn, defs: Setting[], visibility:NonNullable<State[
   const s = t.state;
   const previousSession=s.sleepSession;
   if (!await beginSleep(s,t.now,visibility)) {
-    record(t,{kind:"rest",description:"醒着，在床上躺一会儿"},visibility);
+    record(t,{kind:"rest",description:texts.read(s.config).inBed},visibility);
     return false;
   }
   if (previousSession && s.sleepSession===previousSession) {
@@ -1089,7 +1108,7 @@ async function goToSleep(t: Turn, defs: Setting[], visibility:NonNullable<State[
   const evidence = [
     ...own,
     ...t.newMem.filter((x) => x.scope === scope || x.scope === siteScope),
-  ].slice(-18);
+  ].slice(-numbers.read(t.state.config).dreamEvidenceCount);
   const previous = await one<Memory>(
     "SELECT * FROM memories WHERE scope='self' AND kind='dream' ORDER BY made DESC LIMIT 1",
   );
@@ -1097,7 +1116,7 @@ async function goToSleep(t: Turn, defs: Setting[], visibility:NonNullable<State[
     "SELECT * FROM memories WHERE scope IN ('public','self') AND kind='observation' AND body LIKE 'bili / filtered_comments ·%' ORDER BY made DESC LIMIT 6",
   )).slice(0,24);
   const result = await think(
-    "你睡着了。回想 records 里的经历，留下 memory、mood（情绪）、cause、interests 和引用的 ids。梦里的想象写在 dream。若想学 samples 里的说法，在 expression 摘一句简短的通用表达，用 use、avoid 记适合和不适合的场合，用 own 写自己的说法。略去人名和私事。",
+    sleepReview,
     {
       self: persona(defs),
       preference: defs.find((x) => x.name === "reflection")?.value,
@@ -1137,7 +1156,7 @@ async function goToSleep(t: Turn, defs: Setting[], visibility:NonNullable<State[
   catch(error) { remember(t,"self","access","好友记忆整理暂缓。"+actionProblem(error)); }
   if(clip(result.mood,50)) setMood(s,{label:clip(result.mood,50),cause:clip(result.cause,120)||"睡前整理",strength:0.5,hours:12},t.now);
   s.sleepId = sleepId;
-  s.activity = "睡着了";
+  s.activity = texts.read(s.config).asleepStatus;
   if (Array.isArray(result.interests))
     s.interests = result.interests
       .map((v: unknown) => clip(v, 36))
@@ -1147,10 +1166,10 @@ async function goToSleep(t: Turn, defs: Setting[], visibility:NonNullable<State[
   t.writes.push(
     stmt(
       "DELETE FROM memories WHERE kind IN ('thought','access','working') AND made<? AND NOT EXISTS (SELECT 1 FROM memories r WHERE instr(r.evidence,memories.id)>0) AND NOT EXISTS (SELECT 1 FROM daily_posts p WHERE instr(p.evidence,memories.id)>0)",
-      t.now - 30 * 24 * hour,
+      t.now - numbers.read(t.state.config).memoryTopicDays*24*hour,
     ),
   );
-  record(t,{kind:"sleep",description:"在床上睡觉"},visibility);
+  record(t,{kind:"sleep",description:texts.read(s.config).sleeping},visibility);
   return true;
 }
 async function publish(t: Turn, defs: Setting[]) {
@@ -1167,14 +1186,14 @@ async function publish(t: Turn, defs: Setting[]) {
     25,
   );
   const experiences=await publicActivities(t.state);
-  for(const a of experiences.filter(a=>a.made>=cutoff && a.made<=t.now).slice(0,8)) {
+  for(const a of experiences.filter(a=>a.made>=cutoff && a.made<=t.now).slice(0,numbers.read(t.state.config).journalEvidenceCount)) {
     events.push({id:a.id,scope:"public",made:a.made,kind:"activity",body:a.label+
       (a.detail?.kind==="reading"?" · "+(a.detail.items[0]?.title??""):"")+(a.remark?" "+a.remark:""),
       source:a.detail?.kind==="reading"?a.detail.items[0]?.url??"":"",evidence:"[]",due:null,resolved:0});
   }
-  if (!events.length) throw Error("今天没有可引用的公开经历");
+  if (!events.length) throw Error(lifeErrors.noPublicEvents);
   const result = await think(
-    "用第一人称写今天一条站内动态，一句话也可以。只写 events 中可公开的经历，分清打算、已开始和已完成，也分清读到的内容和亲身经历。返回 {body,ids:[引用的记录编号]}。",
+    journal,
     {
       identity: "鲸鱼娘",
       date,
@@ -1187,12 +1206,12 @@ async function publish(t: Turn, defs: Setting[]) {
   const ids = events.filter(
     (m) => Array.isArray(result.ids) && result.ids.includes(m.id),
   );
-  const body = clip(result.body, 3000);
-  if (!body || !ids.length) throw Error("这篇动态需要可核对的经历");
+  const body = clip(result.body, numbers.read(t.state.config).journalBodyChars);
+  if (!body || !ids.length) throw Error(lifeErrors.journalEvidence);
   const sources = ids
     .filter((e) => /^https:\/\//.test(e.source))
     .map((e) => ({
-      name: (e.body.split("\n")[1] || "原始来源").slice(0, 70),
+      name: (e.body.split("\n")[1] || texts.read(t.state.config).originalSource).slice(0, 70),
       url: e.source,
     }));
   t.writes.push(
@@ -1209,8 +1228,8 @@ async function publish(t: Turn, defs: Setting[]) {
   return "published";
 }
 function writingHabit(state:State,now:number) {
-  const habit=state.journalHabit??{everyDays:1,nextDay:dayOf(now)};
-  return {...habit,invited:habit.everyDays>0 && dayOf(now)>=habit.nextDay && hourOf(now)>=20};
+  const habit=state.journalHabit??{everyDays:numbers.read(state.config).fallbackJournalDays,nextDay:dayOf(now)};
+  return {...habit,invited:habit.everyDays>0 && dayOf(now)>=habit.nextDay && hourOf(now)>=numbers.read(state.config).journalHour};
 }
 function markInboxRead(t: Turn, scope: string, inbox: ChatLine[]) {
   for (const m of inbox) {
@@ -1234,7 +1253,7 @@ export async function respond(
   const interruptedRest=interruptedActivity ? restContext(await currentRest(t.state,t.now),t.state,t.now) : undefined;
   if(t.state.mode==="awake") {
     endActivity(t);
-    t.state.activity=t.state.inBed?"醒着，在床上躺一会儿":"在小屋";
+    t.state.activity=t.state.inBed?texts.read(t.state.config).inBed:texts.read(t.state.config).atHome;
   }
   const identity = await identityFor(peer),
     peers = await relatedPeers(identity),
@@ -1262,7 +1281,7 @@ export async function respond(
   const shared = [...inbox].reverse().map(line => ({ line, link: sharedLink(line.body) })).find(item => item.link);
   let reading: Observation | undefined;
   if (shared?.link) {
-    reading = await readMedia(shared.link, imports());
+    reading = await readMedia(shared.link, imports(t.state));
     if(reading.resolved) shared.link={...shared.link,...reading.resolved};
     if(shared.link.source==="bili" && shared.link.page && shared.link.page>1)
       for(const item of reading.items) {const url=new URL(item.url);url.searchParams.set("p",String(shared.link.page));item.url=url.href;}
@@ -1321,7 +1340,7 @@ export async function respond(
       recent: chat.recent,
       unread: chat.unread,
   };
-  let response=await think(chatInstructions(prompt),fitChatPrompt(prompt),t.now,"chat",images.length?images.map(i=>i.url):undefined,images.length?"chat_vision":"chat");
+  let response=await think(chatInstructions(prompt),fitChatPrompt(prompt,numbers.read(t.state.config).chatContextChars),t.now,"chat",images.length?images.map(i=>i.url):undefined,images.length?"chat_vision":"chat");
   if(last && response.decision!=="silent" && response.action==="read" && !mentionsAvoided(JSON.stringify(response.media??{}),avoid)) {
     const request=mediaSchema.safeParse(response.media);
     const result=request.success && !isBiliAccountRead(request.data) ? await perceive(t,request.data,scope) : undefined;
@@ -1330,7 +1349,7 @@ export async function respond(
       comments:result.comments?.filter(c=>!mentionsAvoided(c.text,avoid)).slice(0,16),filteredCount:result.filteredCount} :
       {status:"unavailable_in_chat",summary:request.success ? "账号里的私人列表只供自己翻阅。" : actionProblem(request.error)};
     const replyPrompt={...prompt,toolResult};
-    response=await think(chatInstructions(replyPrompt),fitChatPrompt(replyPrompt),t.now,"chat",
+    response=await think(chatInstructions(replyPrompt),fitChatPrompt(replyPrompt,numbers.read(t.state.config).chatContextChars),t.now,"chat",
       images.length?images.map(i=>i.url):undefined,"chat_read_reply");
     delete response.action;
   }
@@ -1361,7 +1380,7 @@ export async function respond(
   if(last && response.action==="alarm") {
     const command=actionSchema.shape.alarm.safeParse(response.alarm);
     try {
-      if(!command.success || !command.data) throw Error("请告诉我闹钟要在几点响。");
+      if(!command.success || !command.data) throw Error(lifeErrors.alarmTime);
       const summary=setAlarm(t.state,command.data,t.now);
       remember(t,scope,"event",summary,{evidence:JSON.stringify(["chat-in-"+last.id])});
       response.messages=[summary];
@@ -1395,7 +1414,7 @@ export async function respond(
   }
   if(voice && media && parts.length) parts.push("");
   if (!parts.length) {
-    if (!media) throw Error("私信没有有效的发送决定");
+    if (!media) throw Error(lifeErrors.chatDecision);
     parts.push("");
   }
   const batch = crypto.randomUUID();
@@ -1451,7 +1470,7 @@ export async function tick(
     const defs = await versions();
     const originalNext = state.nextAt;
     if (!(await one("SELECT id FROM memories WHERE id='move-in'"))) {
-      remember(t, siteScope, "event", "搬进小屋。屋里有床、书桌和一台电脑。", {
+      remember(t, siteScope, "event", moveIn, {
         id: "move-in",
       });
     }
@@ -1470,9 +1489,10 @@ export async function tick(
       await commit(lock,state,t.writes.splice(0),true);
     }
     const sleepOnly=state.mode==="asleep";
-    const pending=await nextInbox(peer,sleepOnly);
+    const maxBurst=numbers.read(state.config).chatBurstMs;
+    const pending=await nextInbox(peer,sleepOnly,state.config);
     if (sleepOnly && !pending) {
-      const waiting=await nextInbox(peer);
+      const waiting=await nextInbox(peer,false,state.config);
       if(waiting) {
         const first=await one<{id:string}>("SELECT id FROM messages WHERE peer=? AND side='in' AND handled_at IS NULL AND withheld=0 ORDER BY made,rowid LIMIT 1",waiting.peer);
         if(first && !await one("SELECT 1 FROM reply_turns WHERE id=?","sleep-"+first.id))
@@ -1487,7 +1507,7 @@ export async function tick(
       return { status: "asleep", wakeAt: state.wakeAt };
     }
     if (pending && pending.due <= now) {
-      const { batch: burst, allPending } = await readBurst(pending.peer, sleepOnly?0:state.wokeAt, sleepOnly);
+      const { batch: burst, allPending } = await readBurst(pending.peer, sleepOnly?0:state.wokeAt, sleepOnly,state.config);
       if(!burst.length) return {status:"collecting"};
       let outcome;
       try {outcome=await respond(t, pending.peer, burst, defs);}
@@ -1559,20 +1579,21 @@ export async function tick(
       const rest = restContext(await currentRest(state,now),state,now);
       const visibleState = receiptForModel(state);
       const [leisure, readingProgress, previous]=await Promise.all([
-        leisureContext(visibleState),personalReading(state.question),
+        leisureContext(visibleState),personalReading(state.question,state.config),
         one<{at:number}>("SELECT json_extract(value,'$.at') AS at FROM channel_state WHERE id='activity-input/last-action'"),
       ]);
       const [desk, works, cabin]=await Promise.all([
-        discoveryDesk(now,leisure.saves),deskWorks(previous?.at??state.lastAction?.made??now,state.focusWork),cabinContext(visibleState),
+        discoveryDesk(now,leisure.saves,state.config),deskWorks(previous?.at??state.lastAction?.made??now,state.focusWork),cabinContext(visibleState),
       ]);
       const archive=["work","archive"].includes(state.lastAction?.action??"") && state.lastResult && typeof state.lastResult==="object" && "items" in state.lastResult ? state.lastResult : undefined;
       const help = state.lastAction?.action === "help" ? state.lastResult : undefined;
       const workRequest=(state.lastResult as {received?:{work?:{id?:unknown;action?:unknown}}}|undefined)?.received?.work;
       const workHelp=state.lastAction?.action==="work" && ["failed","skipped"].includes(state.lastAction.status)
         ? {usage:activityHelp.work,...await workEvidenceChoices(state.lastAction.ref ?? workRequest?.id,workRequest?.action)} : undefined;
-      if(archive || help || state.lastAction?.action==="object") leisure.latest=undefined;
+      const config=state.lastAction?.action==="config" ? state.lastResult : undefined;
+      if(config || archive || help || state.lastAction?.action==="object") leisure.latest=undefined;
       const decision = {
-        self: persona(defs), sleep, rest, readingProgress,desk,works,cabin,help,archive,duePlans,
+        self: persona(defs), sleep, rest, readingProgress,desk,works,cabin,help,archive,config,duePlans,
         workHelp,
         reflection:state.lastAction?.action==="reflect" && state.lastAction.status==="failed"
           ? {usage:activityHelp.reflect,activities:leisure.recent} : undefined,
@@ -1609,8 +1630,8 @@ export async function tick(
         count = t.newMem.length,
         before = structuredClone(state);
       try {
-        if(writingHabit(state,now).invited) state.journalHabit={everyDays:state.journalHabit?.everyDays??1,
-          nextDay:dayOf(now+(state.journalHabit?.everyDays||1)*24*hour)};
+        if(writingHabit(state,now).invited) state.journalHabit={everyDays:state.journalHabit?.everyDays??numbers.read(state.config).fallbackJournalDays,
+          nextDay:dayOf(now+(state.journalHabit?.everyDays||numbers.read(state.config).fallbackJournalDays)*24*hour)};
         await execute(t, defs, actionSchema.parse(result?.action==="sleep"?{...result,minutes:undefined}:result), contacts);
       } catch (error) {
         t.writes.length = mark;
@@ -1628,7 +1649,7 @@ export async function tick(
         finishAction(state,action,now,{status:"failed",summary:"这次动作未完成。"+detail,ref:error instanceof WorkInputError?error.ref:undefined,
           result:{error:detail,...(field ? {field,attempts,
             received:action==="work" ? {work:workInputTrace(result?.work)} : {evidenceId:clip(result?.evidenceId,80),idea:clip(result?.idea,350)}} : {})}});
-        state.activity = "在小屋";
+        state.activity = texts.read(state.config).atHome;
         remember(
           t,
           privateScope,

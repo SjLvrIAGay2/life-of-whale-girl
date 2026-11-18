@@ -1,3 +1,7 @@
+import { qqErrors } from "../config/texts/errors.ts";
+import { numbers } from "../config/numbers.ts";
+import { links } from "../config/links.ts";
+import { qqHelp } from "../config/tool-guides/qq";
 import { env, waitUntil } from "cloudflare:workers";
 import {
   createHash,
@@ -50,7 +54,7 @@ export function qqChallenge(secret: string, ts: string, token: string) {
     typeof token !== "string" ||
     !/^[A-Za-z0-9_./+=-]{1,128}$/.test(token)
   )
-    throw Error("无效的回调验证");
+    throw Error(qqErrors.signature);
   return {
     plain_token: token,
     signature: sign(null, Buffer.from(ts + token), signingKey(secret)).toString(
@@ -73,7 +77,7 @@ async function qqConfig() {
 }
 export async function configureQQ(appId: string, secret: string) {
   if (!/^\d{5,20}$/.test(appId) || secret.length < 12 || secret.length > 256)
-    throw Error("QQ 凭据格式有误");
+    throw Error(qqErrors.format);
   const { seal } = await import("./vault");
   const value = await seal(JSON.stringify({ appId, secret }));
   await stmt(
@@ -97,7 +101,7 @@ export async function issuePair() {
     stmt(
       "INSERT INTO channel_state VALUES(?,?)",
       "qq-pair/" + digest,
-      JSON.stringify({ until: Date.now() + 600000 }),
+      JSON.stringify({ until: Date.now() + numbers.defaults.pairLifetimeMs }),
     ),
   ]);
   return code;
@@ -105,7 +109,7 @@ export async function issuePair() {
 export async function qqEvent(r: Request) {
   const config = await qqConfig();
   if (!config.secret)
-    return Response.json({ message: "QQ 尚未配置" }, { status: 503 });
+    return Response.json({ message: qqErrors.credentials }, { status: 503 });
   if (!r.body) return new Response(null, { status: 400 });
   const raw = new TextDecoder().decode(await limited(r.body, 64000));
   const x = JSON.parse(raw);
@@ -171,7 +175,6 @@ function qqReferences(event: QQIncoming) {
   return { index: field("msg_idx=") || null, quotedRef: element?.msg_idx || ref || null, quotedText };
 }
 
-const qqHelp="可以和我聊天、发图片或语音，也可以请我读哔哩哔哩或小黑盒、设小屋闹钟。我睡着时普通留言会留到醒后，以 * 开头的互动（例如「*轻轻敲了敲门」）我当时就可能察觉。发送「帮助」可再看这段说明。";
 export async function acceptQQ(x: any) {
   if(x.op===0 && x.t==="C2C_MESSAGE_RECALL") {
     const user=x.d?.author?.user_openid??x.d?.user_openid;
@@ -297,17 +300,17 @@ export async function acceptQQ(x: any) {
 let access: { token: string; until: number; appId: string } | undefined;
 export async function qqToken() {
   const { appId, secret } = await qqConfig();
-  if (!secret) throw Error("QQ 尚未配置");
+  if (!secret) throw Error(qqErrors.credentials);
   if (access && access.appId === appId && access.until > Date.now())
     return access.token;
-  const r = await fetch("https://bots.qq.com/app/getAppAccessToken", {
+  const r = await fetch(links.defaults.qqToken, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ appId, clientSecret: secret }),
     signal: AbortSignal.timeout(9000),
   });
   const b = (await r.json()) as any;
-  if (!r.ok || !b.access_token) throw Error("QQ 凭据验证失败");
+  if (!r.ok || !b.access_token) throw Error(qqErrors.invalidCredentials);
   access = {
     token: b.access_token,
     appId,
@@ -373,7 +376,7 @@ export async function deliverQQ(now=Date.now()) {
       if (!m.reply_to && !await permitsQQOpener(m,now)) {status="suppressed";continue;}
       const token = await qqToken();
       const base =
-        "https://api.sgroup.qq.com/v2/users/" +
+        links.defaults.qqUsers +
         encodeURIComponent(m.peer.slice(3));
       const headers = {
         "Content-Type": "application/json",
@@ -394,7 +397,7 @@ export async function deliverQQ(now=Date.now()) {
           });
           if (!upload.ok) throw Error("QQ 语音上传失败 (" + upload.status + ")");
           const file = await upload.json<{ file_info?: string }>();
-          if (!file.file_info) throw Error("QQ 语音凭证为空");
+          if (!file.file_info) throw Error(qqErrors.voiceToken);
           delete payload.content;
           payload.msg_type = 7;
           payload.media = { file_info: file.file_info };
@@ -421,9 +424,9 @@ export async function deliverQQ(now=Date.now()) {
             }),
             signal: AbortSignal.timeout(10000),
           });
-          if (!upload.ok) throw Error("QQ 图片上传失败");
+          if (!upload.ok) throw Error(qqErrors.uploadImage);
           const file = await upload.json<{ file_info: string }>();
-          if (!file.file_info) throw Error("QQ 图片凭证为空");
+          if (!file.file_info) throw Error(qqErrors.imageToken);
           payload.msg_type = 7;
           payload.media = { file_info: file.file_info };
         }

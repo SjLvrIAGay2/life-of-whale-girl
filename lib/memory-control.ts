@@ -1,3 +1,4 @@
+import { memoryControlErrors } from "../config/texts/errors.ts";
 import { all, db, memory, one, stmt, type Memory } from "../db";
 import { identityFor, relatedPeers } from "./conversation";
 import { promiseDue } from "./friend-memory";
@@ -34,7 +35,7 @@ function suppressRelatedArt(scope:string,now:number) {
 }
 export async function correctMemory(identity: string, id: string, mode: Correction, replacement = "", now = Date.now()) {
   if (!["wrong", "changed", "avoid"].includes(mode) || replacement.length > 240 || (mode === "changed" && !replacement.trim()))
-    throw Error("请填写有效的记忆更正");
+    throw Error(memoryControlErrors.invalidCorrection);
   const scope = "chat:" + identity;
   const entry = await one<Memory>("SELECT * FROM memories WHERE id=? AND scope=? AND hidden=0 AND kind IN ('profile','promise','episode','followup','occasion')", id, scope);
   if (!entry) return false;

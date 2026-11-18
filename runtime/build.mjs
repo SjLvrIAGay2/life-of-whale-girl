@@ -75,8 +75,12 @@ await build({
   external: ["./public-archive.mjs"],
   outfile: dst + "/server/web.mjs",
 });
-await copyFile("runtime/public-archive.mjs", dst + "/server/public-archive.mjs");
+await build({ entryPoints: ["runtime/public-archive.mjs"], bundle: true, platform: "node", format: "esm", target: "node24", outfile: dst + "/server/public-archive.mjs" });
 await build({ entryPoints: ["app/site.css"], bundle: true, minify: true, outfile: dst + "/server/static/site.css" });
+await mkdir(dst + "/mac/config/prompts", { recursive: true });
+await copyFile("config/prompts/embedding.txt", dst + "/mac/config/prompts/embedding.txt");
+await mkdir(dst + "/mac/config/operator", { recursive: true });
+await copyFile("config/operator/embedding.json", dst + "/mac/config/operator/embedding.json");
 await copyFile("runtime/embed.py", dst + "/mac/embed.py");
 await copyFile("runtime/mac-credentials.mjs", dst + "/mac/mac-credentials.mjs");
 for (const n of (await readdir("drizzle")).filter(n=>/^\d{4}_.*\.sql$/.test(n)).sort())

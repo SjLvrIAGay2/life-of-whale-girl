@@ -1,3 +1,4 @@
+import { texts } from "../config/texts.ts";
 import { all, stmt } from "../db";
 import type { State } from "../content/initial";
 import type { Reading } from "../content/activity";
@@ -39,7 +40,8 @@ export async function upgradeExperience(state: State) {
     writes.push(stmt("UPDATE activities SET detail=json_set(detail,'$.detail.status',?),until=min(made,until) WHERE id=?",status,row.id));
     if (state.currentActivity===row.id) {
       state.currentActivity=undefined;
-      state.activity=state.mode==="asleep"?"睡着了":state.inBed?"醒着，在床上躺一会儿":"在小屋";
+      const copy=texts.read(state.config);
+      state.activity=state.mode==="asleep"?copy.asleepStatus:state.inBed?copy.inBed:copy.atHome;
     }
   }
   // In previous versions attention was assigned exclusively by the media adapter.

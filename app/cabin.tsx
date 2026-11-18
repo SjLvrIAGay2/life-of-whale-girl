@@ -1,6 +1,9 @@
+import { useSiteCopy } from "./site-copy";
+import { formatText } from "../config/options";
 import type { PublicItem } from "../lib/cabin-model";
 
 export function CabinMarkers({ items }: { items: PublicItem[] }) {
+  const copy=useSiteCopy();
   const groups = new Map<string, PublicItem[]>();
   for (const item of items)
     if (item.marker) {
@@ -33,7 +36,7 @@ export function CabinMarkers({ items }: { items: PublicItem[] }) {
               left: Math.max(8, Math.min(92, item.marker!.x)) + "%",
               top: Math.max(6, Math.min(94, item.marker!.y)) + "%",
             }}
-            aria-label={"查看" + item.name}
+            aria-label={formatText(copy.inspectItem, {item:item.name})}
           >
             {item.name}
             {group.length > 1 && <small> +{group.length - 1}</small>}
@@ -44,8 +47,9 @@ export function CabinMarkers({ items }: { items: PublicItem[] }) {
   );
 }
 
-const relations = { on: "摆在", inside: "装在", hang: "挂在", part: "装配在", installed: "安装在" };
+const relationLabels = (copy:ReturnType<typeof useSiteCopy>) => ({ on: copy.placedOn, inside: copy.insideItem, hang: copy.hangingOn, part: copy.partOf, installed: copy.installedOn });
 export function CabinInventory({ items }: { items: PublicItem[] }) {
+  const copy=useSiteCopy();
   const groups = new Map<string, PublicItem[]>();
   for (const item of items)
     if (item.at) {
@@ -53,6 +57,7 @@ export function CabinInventory({ items }: { items: PublicItem[] }) {
       list.push(item);
       groups.set(item.at.parent, list);
     }
+  const relations=relationLabels(copy);
   function row(item: PublicItem) {
     const children = groups.get(item.id) ?? [],
       at = item.at;
@@ -65,7 +70,7 @@ export function CabinInventory({ items }: { items: PublicItem[] }) {
             <strong>{item.name}</strong>
             <span className="cabin-location">
               {location}
-              {item.closed ? " · 已关闭" : children.length ? " · " + children.length + " 件" : ""}
+              {item.closed ? copy.itemClosed : children.length ? formatText(copy.itemCount, {count:children.length}) : ""}
             </span>
           </summary>
           {item.description && <p>{item.description}</p>}
@@ -73,10 +78,10 @@ export function CabinInventory({ items }: { items: PublicItem[] }) {
             {item.size && <span>{item.size.join(" × ")} cm</span>}
             {at?.x !== undefined && at.relation !== "installed" && (
               <span>
-                局部位置 ({at.x}, {at.y}) cm · {at.rotation}°
+                {copy.coordinates} ({at.x}, {at.y}) cm · {at.rotation}°
               </span>
             )}
-            <span>编号 {item.id}</span>
+            <span>{copy.itemId} {item.id}</span>
           </p>
           {children.length > 0 && <ul>{children.map(row)}</ul>}
         </details>
@@ -86,7 +91,7 @@ export function CabinInventory({ items }: { items: PublicItem[] }) {
   return (
     <details className="cabin-inventory">
       <summary>
-        小屋里的物品 <span>{items.length - 1} 件</span>
+        {copy.inventoryTitle} <span>{items.length - 1} 件</span>
       </summary>
       <ul>{groups.get("cabin")?.map(row)}</ul>
     </details>

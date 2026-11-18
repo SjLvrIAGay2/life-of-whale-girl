@@ -1,3 +1,5 @@
+import { numbers } from "../config/numbers.ts";
+import { contactPreferencesErrors } from "../config/texts/errors.ts";
 import { z } from "zod";
 import { db, one, stmt } from "../db";
 import { dayOf } from "../content/initial";
@@ -28,9 +30,9 @@ export async function setContactPreferences(identity:string, raw:unknown) {
   const {proactive,...partial}=change;
   const prefs={...await contactPreferences(identity),...partial};
   if (!!prefs.quietStart!==!!prefs.quietEnd || (prefs.quietStart && prefs.quietStart===prefs.quietEnd))
-    throw Error("请填写不同的免打扰起止时间");
+    throw Error(contactPreferencesErrors.quietHours);
   if(!!prefs.textStart!==!!prefs.textEnd || (prefs.textStart && prefs.textStart===prefs.textEnd))
-    throw Error("请填写不同的纯文字时段起止时间");
+    throw Error(contactPreferencesErrors.textHours);
   const writes=[];
   if (Object.keys(partial).length) writes.push(stmt("INSERT INTO channel_state VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=json_patch(channel_state.value,excluded.value)",
     "contact-prefs/"+identity,JSON.stringify(partial)));
@@ -38,7 +40,7 @@ export async function setContactPreferences(identity:string, raw:unknown) {
     : stmt("INSERT OR REPLACE INTO channel_state VALUES(?,'1')","chat-quiet/"+identity));
   if(proactive!==undefined) writes.push(stmt("INSERT INTO reply_turns VALUES(?,?,?,?,?)",crypto.randomUUID(),
     "chat:"+identity,Date.now(),"contact_preference",JSON.stringify({reason:proactive?"已允许主动联系":"好友关闭了主动联系"})));
-  if (!writes.length) throw Error("没有要保存的设置");
+  if (!writes.length) throw Error(contactPreferencesErrors.noChange);
   await db().batch(writes);
   return Object.keys(partial).length ? {...prefs,proactive} : {proactive};
 }
@@ -49,7 +51,7 @@ export function contactAllowed(prefs:ContactPreferences, now:number, due:boolean
 }
 function inPeriod(start:string|null,end:string|null,now:number) {
   if(!start || !end) return false;
-  const clock=new Date(now+8*3600000).toISOString().slice(11,16);
+  const clock=new Date(now+numbers.defaults.shanghaiOffsetMs).toISOString().slice(11,16);
   return start<end ? start<=clock && clock<end : clock>=start || clock<end;
 }
 export function voicePreference(prefs:ContactPreferences,now:number) {

@@ -1,3 +1,8 @@
+import { services } from "../config/operator/services.ts";
+import { texts } from "../config/texts.ts";
+import type { Overrides } from "../config/options.ts";
+import { numbers } from "../config/numbers.ts";
+import { links } from "../config/links.ts";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { hkey } from "./heybox-sign.mjs";
@@ -41,12 +46,12 @@ export type Observation = {
   atEnd?: boolean;
 };
 type Network = {
+  overrides?: Overrides;
   biliCookie?: string;
   heyCookie?: string;
   request?: typeof fetch;
 };
-const userAgent =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+const userAgent = services.mediaUserAgent;
 export function plain(value: unknown, max = 450) {
   return String(value ?? "")
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
@@ -67,7 +72,7 @@ export function plain(value: unknown, max = 450) {
     .trim()
     .slice(0, max);
 }
-export function usableName(raw: unknown, replies?: unknown) {
+export function usableName(raw: unknown, replies?: unknown, threshold=numbers.defaults.biliRepliesThreshold) {
   if (typeof raw !== "string") return false;
   const n = raw
     .normalize("NFKC")
@@ -77,9 +82,9 @@ export function usableName(raw: unknown, replies?: unknown) {
   if (!n) return false;
   if (!/[鲸鱼]/.test(n)) return true;
   const count = typeof replies === "string" && /^\d+$/.test(replies) ? Number(replies) : replies;
-  return typeof count === "number" && Number.isSafeInteger(count) && count > 150;
+  return typeof count === "number" && Number.isSafeInteger(count) && count > threshold;
 }
-function replyPage(data: any) {
+function replyPage(data: any, n=numbers.defaults) {
   const filtered = new Set<string>();
   const seen = new Set<string>();
   const out: NonNullable<Observation["comments"]> = [];
@@ -88,7 +93,7 @@ function replyPage(data: any) {
     const id = String(row.rpid_str ?? row.rpid ?? "");
     if (!id) return;
     // rcount is the count shown in Bilibili's “共…条回复”. Older rows may provide only count.
-    if (!usableName(row.member?.uname, row.rcount ?? row.count)) filtered.add(id);
+    if (!usableName(row.member?.uname, row.rcount ?? row.count,n.biliRepliesThreshold)) filtered.add(id);
     else if (!seen.has(id)) {
       const body = plain(row.content?.message, 350).replace(
         /^回复\s*@[^:：]{1,64}[:：]\s*/,
@@ -111,7 +116,7 @@ function replyPage(data: any) {
     ...(data?.top_replies ?? []),
     ...(data?.replies ?? []),
   ].forEach(visit);
-  return {comments:out.slice(0,50), filteredCount:[...filtered].filter(id=>!seen.has(id)).length};
+  return {comments:out.slice(0,n.biliCommentCount), filteredCount:[...filtered].filter(id=>!seen.has(id)).length};
 }
 export function cleanReplies(data: any) {
   return replyPage(data).comments;
@@ -123,7 +128,7 @@ async function read(
 ) {
   const options: RequestInit = {
     headers: { "User-Agent": userAgent, ...headers },
-    signal: AbortSignal.timeout(12500),
+    signal: AbortSignal.timeout(numbers.defaults.mediaTimeoutMs),
     redirect: "manual",
   };
   const r = await (net.request ?? fetch)(url, options);
@@ -143,7 +148,7 @@ async function read(
     const chunk = await reader.read();
     if (chunk.done) break;
     n += chunk.value.length;
-    if (n > 2500000) {
+    if (n > numbers.defaults.mediaMaxBytes) {
       await reader.cancel();
       throw Error("too_large");
     }
@@ -164,9 +169,9 @@ async function bili(
   net: Network,
   sign = false,
 ) {
-  const base = "https://api.bilibili.com";
+  const base = links.defaults.biliApi;
   const headers: Record<string, string> = {
-    Referer: "https://www.bilibili.com/",
+    Referer: links.defaults.biliSite + "/",
   };
   if (net.biliCookie) headers.Cookie = net.biliCookie;
   if (sign) {
@@ -183,7 +188,7 @@ async function bili(
           .map((i) => keys[i])
           .join("")
           .slice(0, 32),
-        until: Date.now() + 1800000,
+        until: Date.now() + numbers.defaults.wbiCacheMs,
       };
     }
     args = { ...args, wts: String(Math.floor(Date.now() / 1000)) };
@@ -215,7 +220,7 @@ async function bili(
     );
   return v.data ?? v.result;
 }
-const biliURL = (bv: string) => "https://www.bilibili.com/video/" + bv;
+const biliURL = (bv: string) => links.defaults.biliSite + "/video/" + bv;
 const biliItem = (x: any): Story => ({
   id: x.bvid,
   title: plain(x.title, 120),
@@ -225,7 +230,7 @@ const biliItem = (x: any): Story => ({
 export function isBiliAccountRead(q: ReadRequest) {
   return q.source === "bili" && (q.action === "history" || q.action === "watch_later");
 }
-const episodeURL = (id: string) => "https://www.bilibili.com/bangumi/play/" + id;
+const episodeURL = (id: string) => links.defaults.biliSite + "/bangumi/play/" + id;
 const videoId = /^BV[0-9A-Za-z]{10}$/;
 function accountVideo(row: any, history: boolean): Story[] {
   const entry = history ? row?.history : row;
@@ -249,8 +254,8 @@ function accountVideo(row: any, history: boolean): Story[] {
 }
 async function readBiliList(q: ReadRequest, net: Network): Promise<Observation> {
   if (!net.biliCookie?.trim()) throw Error("needs_login");
-  const history = q.action === "history", size = 8;
-  const page = Math.max(1, Math.min(10000, Math.trunc(q.page ?? 1)));
+  const history = q.action === "history", size = numbers.read(net.overrides).biliListCount;
+  const page = Math.max(1, Math.min(numbers.defaults.mediaPageMax, Math.trunc(q.page ?? 1)));
   const params: Record<string, string> = { ps: String(size) };
   if (history) {
     params.type = "archive";
@@ -269,11 +274,12 @@ async function readBiliList(q: ReadRequest, net: Network): Promise<Observation> 
     if (next.success && (next.data.max !== q.cursor?.max || next.data.view_at !== q.cursor?.view_at || next.data.business !== q.cursor?.business))
       result.nextCursor = next.data;
   }
-  if (!history && page * size < d.count && rows.length && page < 10000) result.nextPage = page + 1;
+  if (!history && page * size < d.count && rows.length && page < numbers.defaults.mediaPageMax) result.nextPage = page + 1;
   return result;
 }
 async function readBili(q: ReadRequest, net: Network): Promise<Observation> {
   if (isBiliAccountRead(q)) return readBiliList(q, net);
+  const n=numbers.read(net.overrides);
   const selectPart = q.action === "subtitles" || q.action === "frames" || q.action === "open";
   const page = String(q.page ?? 1);
   if (q.action === "search" || q.action === "browse") {
@@ -282,7 +288,7 @@ async function readBili(q: ReadRequest, net: Network): Promise<Observation> {
       ? await bili(
           "/x/web-interface/wbi/search/type",
           {
-            keyword: (q.query || "动画").slice(0, 60),
+            keyword: (q.query || texts.read(net.overrides).searchTopic).slice(0, 60),
             search_type: "video",
             page,
           },
@@ -291,10 +297,10 @@ async function readBili(q: ReadRequest, net: Network): Promise<Observation> {
         )
       : await bili(
           "/x/web-interface/index/top/feed/rcmd",
-          { ps: "8", fresh_idx: page, version: "1" },
+          { ps: String(n.biliListCount), fresh_idx: page, version: "1" },
           net,
         );
-    const items:Story[]=(data.result ?? data.item ?? []).filter((x:any)=>videoId.test(x.bvid)).slice(0,8).map(biliItem);
+    const items:Story[]=(data.result ?? data.item ?? []).filter((x:any)=>videoId.test(x.bvid)).slice(0,n.biliListCount).map(biliItem);
     return {level:"title",status:items.length?"ok":"no_results",items};
   }
   let bvid = q.id ?? "";
@@ -331,12 +337,12 @@ async function readBili(q: ReadRequest, net: Network): Promise<Observation> {
       param,
       net,
     );
-    const {comments,filteredCount} = replyPage(data);
+    const {comments,filteredCount} = replyPage(data,n);
     const total = data.page?.count, size = data.page?.size || 16;
     const atEnd = Number.isInteger(total) ? Number(page)*size >= total : !data.replies?.length;
     return {
       level: "filtered_comments", filteredCount, atEnd,
-      nextPage: !atEnd && Number(page)<10000 ? Number(page)+1 : undefined,
+      nextPage: !atEnd && Number(page)<numbers.defaults.mediaPageMax ? Number(page)+1 : undefined,
       status: comments.length
         ? "ok"
         : data.replies == null
@@ -357,7 +363,7 @@ async function readBili(q: ReadRequest, net: Network): Promise<Observation> {
         status: d.need_login_subtitle ? "needs_login" : "no_subtitles",
         items: [item],
       };
-    const url = new URL(track.subtitle_url, "https://www.bilibili.com");
+    const url = new URL(track.subtitle_url, links.defaults.biliSite);
     if (
       url.protocol !== "https:" ||
       !/(^|\.)(bilibili\.com|hdslb\.com|biliapi\.net)$/.test(url.hostname)
@@ -365,13 +371,13 @@ async function readBili(q: ReadRequest, net: Network): Promise<Observation> {
       throw Error("invalid_subtitle_source");
     const b = JSON.parse(await read(url, net)).body;
     if (!Array.isArray(b)) throw Error("invalid_subtitles");
-    const start=Math.max(0,Math.min(50000,Math.floor(q.offset??0)));
+    const start=Math.max(0,Math.min(numbers.defaults.mediaOffsetMax,Math.floor(q.offset??0)));
     if(start>=b.length) return {status:"end_of_subtitles",level:"metadata",items:[item]};
     const lines: string[] = [];
     let length = 0;
-    for (const cue of b.slice(start,start+50)) {
+    for (const cue of b.slice(start,start+n.subtitleLines)) {
       const line = Math.floor(cue.from) + "s " + plain(cue.content,120);
-      if (length + line.length + (lines.length ? 1 : 0) > 3200) break;
+      if (length + line.length + (lines.length ? 1 : 0) > n.subtitleChars) break;
       length += line.length + (lines.length ? 1 : 0);
       lines.push(line);
     }
@@ -386,13 +392,13 @@ async function readBili(q: ReadRequest, net: Network): Promise<Observation> {
   if (q.action === "frames") {
     const d = await bili("/x/player/videoshot", { bvid, cid, index: "1" }, net);
     const frames = (d.image ?? [])
-        .map((v: string) => new URL(v, "https://www.bilibili.com"))
+        .map((v: string) => new URL(v, links.defaults.biliSite))
         .filter(
           (u: URL) =>
             u.protocol === "https:" && /(^|\.)hdslb\.com$/.test(u.hostname),
         )
         .map(String),
-      start = Math.max(0,Math.min(50000,Math.floor(q.offset??0)));
+      start = Math.max(0,Math.min(numbers.defaults.mediaOffsetMax,Math.floor(q.offset??0)));
     if (!frames[start]) return {level:"metadata",status:frames.length?"end_of_frames":"no_frames",items:[item]};
     return {level:"storyboard_available",status:"ok",items:[item],frames:frames.slice(start,start+2),atEnd:start+1===frames.length};
   }
@@ -401,19 +407,11 @@ async function readBili(q: ReadRequest, net: Network): Promise<Observation> {
 let heyboxDeviceId: string | undefined;
 
 async function hey(path: string, args: Record<string, string>, net: Network) {
-  const url = new URL(path, "https://api.xiaoheihe.cn");
+  const url = new URL(path, links.defaults.heyboxApi);
   const time = Math.floor(Date.now() / 1000),
     nonce = crypto.randomUUID().replace(/-/g, "").toUpperCase();
   url.search = new URLSearchParams({
-    os_type: "web",
-    app: "heybox",
-    client_type: "web",
-    version: "999.0.4",
-    web_version: "3.0",
-    x_client_type: "web",
-    x_app: "heybox_website",
-    x_os_type: "Windows",
-    device_info: "Chrome",
+    ...services.heybox,
     device_id: heyboxDeviceId ??= crypto.randomUUID().replace(/-/g, ""),
     ...args,
     hkey: hkey(path, time, nonce),
@@ -421,8 +419,8 @@ async function hey(path: string, args: Record<string, string>, net: Network) {
     nonce,
   }).toString();
   const headers: Record<string, string> = {
-    Referer: "https://www.xiaoheihe.cn/",
-    Origin: "https://www.xiaoheihe.cn",
+    Referer: links.defaults.heyboxSite + "/",
+    Origin: links.defaults.heyboxSite,
   };
   if (net.heyCookie) headers.Cookie = net.heyCookie;
   const v = JSON.parse(await read(url, net, headers));
@@ -435,15 +433,16 @@ async function hey(path: string, args: Record<string, string>, net: Network) {
   return v.result;
 }
 const heyShare = (id: string) =>
-  "https://api.xiaoheihe.cn/v3/bbs/app/api/web/share?link_id=" +
+  links.defaults.heyboxApi + "/v3/bbs/app/api/web/share?link_id=" +
   encodeURIComponent(id);
 async function readHey(q: ReadRequest, net: Network): Promise<Observation> {
+  const n=numbers.read(net.overrides);
   if (q.action === "browse" || q.action === "search") {
     const start=q.page??1, query=q.query?.trim().toLowerCase();
-    const last=Math.min(10000,start+(q.action==="search" && query ? 2 : 0));
+    const last=Math.min(numbers.defaults.mediaPageMax,start+(q.action==="search" && query ? n.heySearchPages-1 : 0));
     let checked=0;
     for(let page=start;page<=last;page++) {
-      const data=await hey("/bbs/app/feeds",{offset:String((page-1)*10),limit:"10",pull:"0",dw:"604"},net);
+      const data=await hey("/bbs/app/feeds",{offset:String((page-1)*n.heyFeedCount),limit:String(n.heyFeedCount),pull:"0",dw:"604"},net);
       const links=Array.isArray(data.links)?data.links:[];
       const items:Story[]=[];
       for(const link of links) {
@@ -454,7 +453,7 @@ async function readHey(q: ReadRequest, net: Network): Promise<Observation> {
         const title=plain(link.title,120),body=plain(link.description);
         if(!query || (title+" "+body).toLowerCase().includes(query)) items.push({id,title,body,url:heyShare(id)});
       }
-      const atEnd=links.length<10 || data.has_more===false || page===10000;
+      const atEnd=links.length<n.heyFeedCount || data.has_more===false || page===numbers.defaults.mediaPageMax;
       if(items.length || atEnd || page===last) return {level:"feed",status:items.length?"ok":"no_results",items,atEnd,
         nextPage:atEnd?undefined:page+1,coverage:"推荐流第 "+(page===start?start:start+"–"+page)+" 页，检查了 "+checked+" 条帖子"};
     }
@@ -469,8 +468,8 @@ async function readHey(q: ReadRequest, net: Network): Promise<Observation> {
       is_first: (q.page ?? 1) === 1 ? "1" : "0",
       index: "1",
       owner_only: "0",
-      offset: String(((q.page ?? 1)-1)*8),
-      limit: "8",
+      offset: String(((q.page ?? 1)-1)*n.heyThreadCount),
+      limit: String(n.heyThreadCount),
       sort_filter: "hot",
     },
     net,
@@ -489,7 +488,7 @@ async function readHey(q: ReadRequest, net: Network): Promise<Observation> {
   const item = {
     id: q.id!,
     title: plain(link.title, 120),
-    body: body ? body.slice(q.offset ?? 0,(q.offset ?? 0)+2800) : plain(link.description, 1000),
+    body: body ? body.slice(q.offset ?? 0,(q.offset ?? 0)+n.heyArticleChars) : plain(link.description, 1000),
     url: heyShare(q.id!),
   };
   const comments = (d.comments ?? [])
@@ -502,12 +501,12 @@ async function readHey(q: ReadRequest, net: Network): Promise<Observation> {
           text: plain(c.text, 280),
         })),
     )
-    .slice(0, 24);
+    .slice(0, n.heyCommentCount);
   return {
     level: q.action === "comments" && comments.length ? "discussion" : q.action === "open" && body ? "article" : "metadata",
     status: q.action==="comments" && !comments.length ? "no_visible_comments" : body && q.action==="open" && (q.offset??0)>=body.length ? "end_of_article" : "ok",
     items: [item],
-    ...(q.action === "comments" ? {comments,atEnd:(d.comments?.length??0)<8,nextPage:(d.comments?.length??0)>=8 && (q.page??1)<10000?(q.page??1)+1:undefined} :
+    ...(q.action === "comments" ? {comments,atEnd:(d.comments?.length??0)<n.heyThreadCount,nextPage:(d.comments?.length??0)>=n.heyThreadCount && (q.page??1)<numbers.defaults.mediaPageMax?(q.page??1)+1:undefined} :
       body ? {nextOffset:(q.offset??0)+item.body.length,atEnd:(q.offset??0)+item.body.length>=body.length} : {}),
   };
 }
@@ -521,7 +520,7 @@ export function sharedLink(text: string): ReadRequest | undefined {
     if (["www.bilibili.com", "m.bilibili.com"].includes(url.hostname)) {
       const id = url.pathname.match(/(?:BV[\da-zA-Z]{10}|ep[1-9]\d{0,15})(?:\/|$)/)?.[0]?.replace(/\/$/,"");
       const page = Number(url.searchParams.get("p"));
-      if (id) return {source:"bili",action:"open",id,...(Number.isInteger(page) && page>0 && page<=10000 ? {page}: {})};
+      if (id) return {source:"bili",action:"open",id,...(Number.isInteger(page) && page>0 && page<=numbers.defaults.mediaPageMax ? {page}: {})};
     }
     if (
       [
@@ -548,7 +547,7 @@ export async function readMedia(
   try {
     if (!q || !readingSources.includes(q.source)) throw Error("unsupported_source");
     if (!readActions.includes(q.action) || (q.source==="heybox" && !["browse","search","open","comments"].includes(q.action))) throw Error("unsupported_action");
-    if (q.page!==undefined && (!Number.isInteger(q.page) || q.page<1 || q.page>10000)) throw Error("invalid_page");
+    if (q.page!==undefined && (!Number.isInteger(q.page) || q.page<1 || q.page>numbers.defaults.mediaPageMax)) throw Error("invalid_page");
     if (q.source==="heybox") return await readHey(q,net);
     if (typeof q.id==="string" && /^https:\/\/b23\.tv\/[a-zA-Z0-9]+\/?$/.test(q.id)) {
       const redirect=await (net.request??fetch)(q.id,{redirect:"manual",signal:AbortSignal.timeout(6000)});

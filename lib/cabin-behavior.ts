@@ -1,4 +1,6 @@
 import { env } from "cloudflare:workers";
+import { cabinBehaviorErrors } from "../config/texts/errors.ts";
+import { links } from "../config/links.ts";
 import { z } from "zod";
 import { one, publicHome } from "../db";
 import { historyCursor, readActions, sharedLink, type Observation, type ReadRequest } from "./media";
@@ -8,7 +10,7 @@ import { workHistory } from "./works";
 import { previewParts, runObjectRecipe } from "./toolbox";
 import { data, type Behavior, type Item } from "./cabin-model";
 import { readingOutcome, sourceNames } from "../content/activity";
-import { siteUsage } from "../content/site";
+import { capabilityGuides, recipeInputs } from "../config/tool-guides/capabilities";
 
 const mediaArgs = z
   .object({
@@ -40,22 +42,7 @@ const inputs = {
   integer: z.object({ input: z.number().int().nonnegative() }).strict(),
 };
 const mediaInputs = { bili: mediaArgs, heybox: heyboxArgs };
-const capabilityGuides = {
-  bili: { description: "看哔哩哔哩", example: { action: "browse" }, parameters: "action 可用 browse、search、open、subtitles、frames、comments、history、watch_later。search 填 query，打开内容填 id。可选 page、offset、root、cursor。" },
-  heybox: { description: "读小黑盒", example: { action: "browse" }, parameters: "action 可用 browse、search、open、comments。search 填 query，读帖子或评论填 id。翻页用 page，续读正文用 offset。" },
-  browser: { description: "打开网页", example: {}, parameters: "省略 url 打开小站首页，也可填支持的哔哩哔哩或小黑盒链接。" },
-  website: { description: "布置个人小站", example: { op: "catalog" }, parameters: siteUsage },
-  game: { description: "玩这一局", example: { op: "look" }, parameters: "op 可用 look、move、pause、resume、restart、next。落子或移动填 move，可加 note 留下批注。" },
-  open: { description: "打开", example: {} },
-  close: { description: "关上", example: {} },
-  work: { description: "翻看这件作品的进展", example: {} },
-  picture: { description: "看这幅画", example: {} },
-} satisfies Record<Extract<Behavior, { capability: string }>["capability"], { description: string; example: object; parameters?: string }>;
-const recipeInputs = {
-  none: { example: {} },
-  text: { parameters: "input 填一段文字", example: { input: "窗边听见了鸟鸣" } },
-  integer: { parameters: "input 填非负整数", example: { input: 0 } },
-};
+
 
 export function describeBehavior(b: Behavior) {
   return "recipe" in b
@@ -119,7 +106,7 @@ export async function runBehavior(
         return [text];
       },
       replay: (value) => {
-        if (!game || game.kind !== "gomoku") throw Error("这个对象没有五子棋棋谱");
+        if (!game || game.kind !== "gomoku") throw Error(cabinBehaviorErrors.missingMoves);
         const ply = Number(value || game.moves.length);
         if (!Number.isSafeInteger(ply) || ply < 0 || ply > game.moves.length)
           throw Error("手数应在 0 到 " + game.moves.length + " 之间");
@@ -141,10 +128,10 @@ export async function runBehavior(
   }
   if (capability === "browser") {
     const { url } = browserArgs.parse(args ?? {});
-    const homeUrl = new URL("/", env.WHALE_ORIGIN || "http://127.0.0.1:19531").href;
+    const homeUrl = new URL("/", env.WHALE_ORIGIN || links.defaults.siteOrigin).href;
     if (url && url !== "/" && url !== homeUrl && url !== homeUrl.slice(0, -1)) {
       const link = sharedLink(url);
-      if (!link) throw Error("浏览器可打开本站首页、B站视频或小黑盒帖子；无法识别该地址");
+      if (!link) throw Error(cabinBehaviorErrors.invalidUrl);
       return read(link);
     }
     if (preview) return { preview: true, url: homeUrl };
@@ -159,9 +146,9 @@ export async function runBehavior(
   }
   if (capability === "game") {
     const command = gameArgs.parse(args ?? {});
-    if (item.source?.kind !== "game") throw Error("这件物品没有关联游戏存档");
+    if (item.source?.kind !== "game") throw Error(cabinBehaviorErrors.noGame);
     const saved = await one<{ kind: Game["kind"] }>("SELECT kind FROM play_saves WHERE id=?", item.source.id);
-    if (!saved) throw Error("找不到游戏存档");
+    if (!saved) throw Error(cabinBehaviorErrors.missingGame);
     return preview
       ? { preview: true, save: item.source.id }
       : host.game(item.source.id, saved.kind, command, sharing);
@@ -169,7 +156,7 @@ export async function runBehavior(
   empty.parse(args ?? {});
   if (capability === "open" || capability === "close") {
     const gates = Object.values(item.regions).flatMap((r) => ("gate" in r && r.gate ? [r.gate] : []));
-    if (!gates.length) throw Error("这件物品没有能开合的区域");
+    if (!gates.length) throw Error(cabinBehaviorErrors.noHinge);
     for (const gate of gates) item.state[gate] = capability === "open";
     return { open: capability === "open" };
   }

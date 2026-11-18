@@ -1,3 +1,6 @@
+import { gamesErrors } from "../config/texts/errors.ts";
+import { levels, gomoku } from "../config/games.ts";
+import { gameRules } from "../config/tool-guides/games.ts";
 // Each engine accepts one resident decision and returns the resulting position.
 export const gameKinds = ["gomoku", "sokoban"] as const;
 export type Move = { cell: string; stone: "黑" | "白"; note?: string; origin?: string };
@@ -18,18 +21,13 @@ export type GameCommand = {
   move?: string;
   note?: string;
 };
-const levels = [
-  ["######", "#    #", "# @$.#", "#    #", "######"],
-  ["#######", "#  .  #", "#  $  #", "# @$ .#", "#     #", "#######"],
-  ["########", "# .  . #", "# $  $ #", "#   @  #", "#      #", "########"],
-];
 const directions: Record<string, [number, number]> = {
   up: [-1, 0],
   down: [1, 0],
   left: [0, -1],
   right: [0, 1],
 };
-const size = 9;
+const size = gomoku.boardSize;
 const cellName = (r: number, c: number) => String.fromCharCode(65 + c) + (r + 1);
 export function positionAt(moves: Move[], count: number) {
   const board = Array.from({ length: size }, () => Array<string>(size).fill("."));
@@ -52,7 +50,7 @@ function fresh(kind: Game["kind"], level = 1): Game {
 }
 function pushBox(g: Game, move: string) {
   const delta = directions[move];
-  if (!delta) throw Error("推箱子方向为 up、down、left、right");
+  if (!delta) throw Error(gamesErrors.direction);
   const rows = g.board.map((row) => [...row]);
   const r = rows.findIndex((row) => row.some((cell) => cell === "@" || cell === "+"));
   const c = rows[r].findIndex((cell) => cell === "@" || cell === "+");
@@ -94,7 +92,7 @@ function strength(board: string[], r: number, c: number, stone: string) {
       }
       if (board[y]?.[x] === ".") opens++;
     }
-    return Math.max(best, n >= 5 ? 100000 : opens * 6 ** n);
+    return Math.max(best, n >= gomoku.winningStones ? gomoku.winScore : opens * gomoku.lineWeight ** n);
   }, 0);
 }
 function place(g: Game, r: number, c: number, stone: Move["stone"], note?: string) {
@@ -103,13 +101,13 @@ function place(g: Game, r: number, c: number, stone: Move["stone"], note?: strin
   g.board[r] = g.board[r].slice(0, c) + mark + g.board[r].slice(c + 1);
   g.moves.push({ cell, stone, ...(note ? { note } : {}) });
   g.steps = g.moves.length;
-  if (strength(g.board, r, c, mark) === 100000)
+  if (strength(g.board, r, c, mark) === gomoku.winScore)
     g.result = stone + "方五子连线，" + (stone === "黑" ? "我赢了。" : "对手赢了。");
   else if (g.steps === size ** 2) g.result = "棋盘已满，和棋。";
 }
 function playStone(g: Game, move: string, note?: string) {
   const cell = move.toUpperCase();
-  if (!/^[A-I][1-9]$/.test(cell)) throw Error("坐标须在 A1 到 I9 之间");
+  if (!/^[A-I][1-9]$/.test(cell)) throw Error(gamesErrors.coordinates);
   const r = Number(cell[1]) - 1,
     c = cell.charCodeAt(0) - 65;
   if (g.board[r][c] !== ".") {
@@ -126,7 +124,7 @@ function playStone(g: Game, move: string, note?: string) {
       if (g.board[y][x] !== ".") continue;
       const attack = strength(g.board, y, x, "O"),
         defend = strength(g.board, y, x, "X");
-      const score = Math.max(attack * 1.1, defend) - (Math.abs(y - 4) + Math.abs(x - 4)) / 100;
+      const score = Math.max(attack * gomoku.attackWeight, defend) - (Math.abs(y - (size-1)/2) + Math.abs(x - (size-1)/2)) * gomoku.centerWeight;
       if (score > best) {
         best = score;
         reply = [y, x];
@@ -147,7 +145,7 @@ type Engine = {
 const engines: Record<Game["kind"], Engine> = {
   gomoku: {
     title: "五子棋",
-    rules: "九路棋盘，自己执黑，横竖斜先连成五子获胜。X 为黑棋，O 为白棋，点为空位。输入 A1 到 I9。",
+    rules: gameRules.gomoku,
     opening: "你执黑先行，对手执白。",
     levels: 1,
     board: () => positionAt([], 0),
@@ -156,7 +154,7 @@ const engines: Record<Game["kind"], Engine> = {
   },
   sokoban: {
     title: "推箱子",
-    rules: "方向 up/down/left/right。@ 是你，$ 是箱，. 是目标，* 是到位的箱子，+ 是目标上的你，# 是墙。",
+    rules: gameRules.sokoban,
     opening: "把所有箱子推到目标点。",
     levels: levels.length,
     board: (level) => [...levels[level - 1]],
@@ -178,14 +176,14 @@ export function legalMoves(g: Game) {
 }
 export function playGame(saved: Game | undefined, command: GameCommand): Game {
   if (command.op === "start") return fresh(command.game);
-  if (!saved || saved.kind !== command.game) throw Error("找不到这个存档，先用 start 开一局");
+  if (!saved || saved.kind !== command.game) throw Error(gamesErrors.noSave);
   const g = structuredClone(saved);
   switch (command.op) {
     case "restart":
       return fresh(g.kind, g.level);
     case "next":
       if (!g.result || g.level >= engines[g.kind].levels)
-        throw Error("当前没有可进入的下一关");
+        throw Error(gamesErrors.nextLevel);
       return fresh(g.kind, g.level + 1);
     case "pause":
       g.paused = true;

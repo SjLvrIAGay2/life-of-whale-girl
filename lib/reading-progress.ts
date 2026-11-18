@@ -1,3 +1,5 @@
+import { numbers } from "../config/numbers.ts";
+import type { Overrides } from "../config/options.ts";
 import { all } from "../db";
 import { readingOutcome, type Reading } from "../content/activity";
 import type { ReadRequest } from "./media";
@@ -53,14 +55,14 @@ function readingPaths(item:Target, stages:Stage[], part:number):ReadRequest[] {
   if (!discussion) actions.push({...item,action:"comments",page:1});
   else {
     const next=discussion.lastAttempt.nextPage ?? (discussion.lastAttempt.status==="ok" && discussion.lastAttempt.atEnd!==true ? (discussion.page??1)+1 : undefined);
-    if(next && next<=10000) actions.push({...item,action:"comments",page:next});
+    if(next && next<=numbers.defaults.mediaPageMax) actions.push({...item,action:"comments",page:next});
   }
   const article=stages.find(s=>s.action==="open")?.lastRead?.position;
   if (item.source==="heybox" && article?.nextOffset && !article.atEnd) actions.push({...item,action:"open",offset:article.nextOffset});
   return actions;
 }
 
-async function materialProgress(item: Target, part?:number) {
+async function materialProgress(item: Target, n:typeof numbers.defaults, part?:number) {
   const rows = await all<Visit>(`WITH visits AS (
     SELECT rowid AS seq,made,detail,json_extract(detail,'$.detail.action') AS op,
       coalesce(json_extract(detail,'$.detail.page'),1) AS page,coalesce(json_extract(detail,'$.detail.root'),'') AS thread,
@@ -76,7 +78,7 @@ async function materialProgress(item: Target, part?:number) {
     FROM visits WINDOW stage AS (PARTITION BY op,page,thread)
   ) SELECT made,detail,attempts,identical,newest,CASE WHEN previousContent IS NULL THEN '首次读到'
       WHEN previousContent=content THEN '和上次相同' WHEN identical>1 THEN '重读以前的内容' ELSE '读到新内容' END AS change FROM ranked
-    WHERE newest=1 OR (status='ok' AND lastResult=1) ORDER BY made DESC,seq DESC LIMIT 12`,item.source,item.id);
+    WHERE newest=1 OR (status='ok' AND lastResult=1) ORDER BY made DESC,seq DESC LIMIT ?`,item.source,item.id,n.readingStageRows);
   const stages = new Map<string,Stage>();
   let title: string | undefined;
   for (const row of rows) {
@@ -88,8 +90,8 @@ async function materialProgress(item: Target, part?:number) {
     const stage = stages.get(key);
     if (stage && (!read.status || read.status==="ok")) {
       const body=read.items[0]?.body;
-      const excerpt=read.comments?.length ? read.comments[0].text.slice(0,160) :
-        read.level==="subtitles" ? body?.split("\n").slice(-3).join("\n").slice(0,300) : body?.slice(0,260);
+      const excerpt=read.comments?.length ? read.comments[0].text.slice(0,n.commentExcerptChars) :
+        read.level==="subtitles" ? body?.split("\n").slice(-n.subtitleExcerptLines).join("\n").slice(0,n.subtitleExcerptChars) : body?.slice(0,n.readingExcerptChars);
       stage.lastRead={at:row.made,level:read.level,change:row.change,timesWithSameContent:row.identical,position:position(read),excerpt:excerpt||undefined};
     }
   }
@@ -98,13 +100,14 @@ async function materialProgress(item: Target, part?:number) {
   return {...item,title,stages:seen,paths:seen.length?readingPaths(item,seen,page):[]};
 }
 
-export async function personalReading(question?:{source?:Target["source"];id?:string;page?:number}) {
+export async function personalReading(question?:{source?:Target["source"];id?:string;page?:number}, overrides?:Overrides) {
+  const n=numbers.read(overrides);
   const targets = await all<Target>(`SELECT ${source} AS source,${target} AS id FROM activities
-    WHERE ${focused} AND ${source} IN ('bili','heybox') AND ${target} IS NOT NULL GROUP BY ${source},${target} ORDER BY max(rowid) DESC LIMIT 4`);
+    WHERE ${focused} AND ${source} IN ('bili','heybox') AND ${target} IS NOT NULL GROUP BY ${source},${target} ORDER BY max(rowid) DESC LIMIT ?`,n.readingMaterials);
   if ((question?.source==="bili" || question?.source==="heybox") && question.id) {
     const focus={source:question.source,id:question.id};
     const rest=targets.filter(t=>t.source!==focus.source || t.id!==focus.id);
-    return Promise.all([materialProgress(focus,question.page),...rest.slice(0,3).map(t=>materialProgress(t))]);
+    return Promise.all([materialProgress(focus,n,question.page),...rest.slice(0,n.readingMaterials-1).map(t=>materialProgress(t,n))]);
   }
-  return Promise.all(targets.map(t=>materialProgress(t)));
+  return Promise.all(targets.map(t=>materialProgress(t,n)));
 }

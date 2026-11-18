@@ -1,17 +1,12 @@
+import { firstName, firstInterest } from "../config/resident-profile.ts";
+import { numbers } from "../config/numbers.ts";
+import { texts } from "../config/texts.ts";
+import { furniture } from "../config/furniture.ts";
+import type { Overrides } from "../config/options";
 export const residentId = "whale";
-export const firstName = "鲸鱼娘的个人小站";
-export const initialSelf =
-  "我叫鲸鱼娘，住在自己的小屋里，对二次元有些兴趣，对主人有些好感。我的爱好和说话方式会随着经历慢慢变化。";
-export const furniture = {
-  bed: { name: "床", width: 39, x: 24, y: 84 },
-  desk: { name: "书桌", width: 27, x: 76, y: 85 },
-  computer: { name: "电脑", width: 13, x: 76, y: 62.5 },
-  plant: { name: "绿植", width: 9, x: 36, y: 79 },
-  lamp: { name: "落地灯", width: 7, x: 84, y: 83 },
-  shelf: { name: "书架", width: 16, x: 14, y: 77 },
-  chair: { name: "椅子", width: 9, x: 70, y: 90 },
-  alarm: { name: "床头闹钟", width: 7, x: 7, y: 61 },
-} as const;
+export { firstName };
+export { initialSelf } from "../config/prompts/tasks.ts";
+export { furniture };
 export type ObjectKind = keyof typeof furniture;
 export type RoomItem = { id: string; kind: ObjectKind; x: number; y: number };
 export type SleepSession = {
@@ -21,6 +16,10 @@ export type SleepSession = {
   recovery: number;
   usualWakeHour: number;
   naturalAt: number;
+  recoveryHours?: number;
+  settlingPressure?: number;
+  settlingMinutes?: number;
+  circadianVariation?: number;
   learn: boolean;
   onsetUnknown?: boolean;
   visibility: "hidden" | "summary" | "detail";
@@ -33,6 +32,7 @@ export type ActionReceipt = {
   ref?: string;
 };
 export type State = {
+  config?: Overrides;
   name: string;
   mode: "awake" | "asleep";
   wakeAt: number;
@@ -81,7 +81,7 @@ export function firstState(now: number): State {
     sleepId: "",
     sleepVersion: 1,
     experienceVersion: 1,
-    activity: "在小屋",
+    activity: texts.defaults.atHome,
     lastAction: null,
     room: (["bed", "desk", "computer", "alarm"] as const).map((kind) => ({
       id: kind,
@@ -89,23 +89,23 @@ export function firstState(now: number): State {
       x: furniture[kind].x,
       y: furniture[kind].y,
     })),
-    mood: "平静",
-    interests: ["二次元"],
+    mood: texts.defaults.neutralMood,
+    interests: [firstInterest],
     attention: "",
   };
 }
 export function dayOf(time: number) {
-  return new Date(time + 8 * 3600000).toISOString().slice(0, 10);
+  return new Date(time + numbers.defaults.shanghaiOffsetMs).toISOString().slice(0, 10);
 }
 export function hourOf(time: number) {
-  return new Date(time + 8 * 3600000).getUTCHours();
+  return new Date(time + numbers.defaults.shanghaiOffsetMs).getUTCHours();
 }
 export const statusNames: Record<string, string> = {
-  home: "在小屋",
+  home: texts.defaults.atHome,
   read: "在看电脑",
   draw: "在画画",
   room: "在整理房间",
-  sleep: "睡着了",
+  sleep: texts.defaults.asleepStatus,
 };
 export type PublicPost = {
   day: string;
@@ -115,6 +115,7 @@ export type PublicPost = {
 };
 export type Art = { id: string; title: string; made: number };
 export type PublicHome = {
+  config?: Overrides;
   name: string;
   mode: State["mode"];
   inBed?: boolean;

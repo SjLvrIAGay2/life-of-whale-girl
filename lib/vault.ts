@@ -1,8 +1,9 @@
+import { vaultErrors } from "../config/texts/errors.ts";
 import { env } from "cloudflare:workers";
 const base64 = (v: ArrayBuffer | Uint8Array) =>
   Buffer.from(v as Uint8Array).toString("base64");
 async function key() {
-  if (!env.WHALE_EDITOR_TOKEN) throw Error("站主密钥未配置");
+  if (!env.WHALE_EDITOR_TOKEN) throw Error(vaultErrors.ownerKey);
   return crypto.subtle.importKey(
     "raw",
     await crypto.subtle.digest(

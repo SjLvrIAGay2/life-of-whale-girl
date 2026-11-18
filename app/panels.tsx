@@ -1,4 +1,8 @@
 "use client";
+import { routes } from "../config/routes.ts";
+import { operatorCopy } from "../config/texts/operator";
+import { formatText } from "../config/options";
+import { numbers } from "../config/numbers.ts";
 import { useState } from "react";
 import type { PublicHome } from "../content/initial";
 import type { Site } from "../content/site";
@@ -27,7 +31,7 @@ export function StudioPanel({
     [slug, setSlug] = useState("home"),
     [pair, setPair] = useState("");
   async function call(op: string, body?: unknown) {
-    const response = await fetch("/api/v1/life/" + op, {
+    const response = await fetch(routes.life + op, {
       method: body === undefined ? "GET" : "POST",
       headers: {
         Authorization: "Bearer " + token,
@@ -36,7 +40,7 @@ export function StudioPanel({
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const data = await response.json<any>();
-    if (!response.ok) throw Error(data.error ?? "请求未完成");
+    if (!response.ok) throw Error(data.error ?? operatorCopy.requestFailed);
     return data;
   }
   async function run(fn: () => Promise<void>) {
@@ -45,7 +49,7 @@ export function StudioPanel({
     try {
       await fn();
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "操作未完成");
+      setMessage(e instanceof Error ? e.message : operatorCopy.operationFailed);
     } finally {
       setBusy(false);
     }
@@ -64,9 +68,9 @@ export function StudioPanel({
   }
   return (
     <Stack gap="5">
-      <Title level={1}>{preview ? "预览草稿" : "小站工作桌"}</Title>
+      <Title level={1}>{preview ? operatorCopy.preview : operatorCopy.desk}</Title>
       <Flex align="end" gap="3" wrap>
-        <Input type="password" label="站主管理令牌" value={token} onChange={setToken} />
+        <Input type="password" label={operatorCopy.ownerToken} value={token} onChange={setToken} />
         <Button
           disabled={busy || !token}
           onClick={() =>
@@ -76,12 +80,12 @@ export function StudioPanel({
             })
           }
         >
-          打开工作桌
+          {operatorCopy.openDesk}
         </Button>
       </Flex>
       {doc && !preview && (
         <Stack gap="4">
-          <Textarea label="版面草稿" rows={13} value={doc} onChange={setDoc} />
+          <Textarea label={operatorCopy.layout} rows={13} value={doc} onChange={setDoc} />
           <Flex gap="2" wrap>
             <Button
               disabled={busy}
@@ -90,25 +94,25 @@ export function StudioPanel({
                   await call("studio", { op: "save", base, document: JSON.parse(doc) });
                   await inspect();
                   setSnapshot(undefined);
-                  setMessage("草稿已保存。");
+                  setMessage(operatorCopy.draftSaved);
                 })
               }
             >
-              保存草稿
+              {operatorCopy.saveDraft}
             </Button>
             <Button variant="outline" disabled={busy} onClick={() => run(showPreview)}>
-              预览已保存草稿
+              {operatorCopy.previewSaved}
             </Button>
             <Button
               disabled={busy}
               onClick={() =>
                 run(async () => {
                   await call("studio", { op: "publish", base });
-                  setMessage("已发布保存的草稿。");
+                  setMessage(operatorCopy.published);
                 })
               }
             >
-              发布已保存草稿
+              {operatorCopy.publish}
             </Button>
             <Button
               variant="outline"
@@ -118,16 +122,16 @@ export function StudioPanel({
                   await call("studio", { op: "rollback" });
                   await inspect();
                   setSnapshot(undefined);
-                  setMessage("已恢复上一版。");
+                  setMessage(operatorCopy.restored);
                 })
               }
             >
-              撤回发布
+              {operatorCopy.undo}
             </Button>
           </Flex>
-          <Title level={2}>委托制作组件</Title>
-          <Textarea label="希望它怎样工作" value={idea} onChange={setIdea} />
-          <Input label="修改已有组件时填目录名" value={alias} onChange={setAlias} />
+          <Title level={2}>{operatorCopy.commission}</Title>
+          <Textarea label={operatorCopy.idea} value={idea} onChange={setIdea} />
+          <Input label={operatorCopy.alias} value={alias} onChange={setAlias} />
           <Button
             disabled={!idea || busy}
             onClick={() =>
@@ -138,23 +142,23 @@ export function StudioPanel({
                   ...(alias ? { name: alias } : {}),
                 });
                 await inspect();
-                setMessage("已注册到草稿：" + made.registered + "。用法 " + JSON.stringify(made.example));
+                setMessage(formatText(operatorCopy.registered,{name:made.registered,example:JSON.stringify(made.example)}));
               })
             }
           >
-            制作并验证
+            {operatorCopy.verify}
           </Button>
-          <Textarea label="组件目录" rows={5} readOnly value={catalog} />
-          <Title level={2}>QQ 好友</Title>
+          <Textarea label={operatorCopy.catalog} rows={5} readOnly value={catalog} />
+          <Title level={2}>{operatorCopy.qqFriends}</Title>
           <Flex gap="3">
             <Button variant="outline" onClick={() => setQqForm(!qqForm)}>
-              设置机器人
+              {operatorCopy.configureBot}
             </Button>
           </Flex>
           {qqForm && (
             <Stack gap="2">
-              <Input label="QQ AppID" value={appId} onChange={setAppId} />
-              <Input label="QQ AppSecret" type="password" value={secret} onChange={setSecret} />
+              <Input label={operatorCopy.appId} value={appId} onChange={setAppId} />
+              <Input label={operatorCopy.appSecret} type="password" value={secret} onChange={setSecret} />
               <Button
                 disabled={busy || !appId || !secret}
                 onClick={() =>
@@ -162,11 +166,11 @@ export function StudioPanel({
                     await call("qq-config", { appId, secret });
                     setSecret("");
                     setQqForm(false);
-                    setMessage("QQ 机器人配置已保存。");
+                    setMessage(operatorCopy.qqSaved);
                   })
                 }
               >
-                保存 QQ 配置
+                {operatorCopy.saveQQ}
               </Button>
             </Stack>
           )}
@@ -181,10 +185,10 @@ export function StudioPanel({
                 })
               }
             >
-              生成 QQ 配对口令
+              {operatorCopy.pairCode}
             </Button>
-            {pair && <Text>QQ 发送「配对 {pair}」，十分钟内有效。</Text>}
-            <Text>配对后可发送「帮助」。睡着时，以 * 开头的动作（如「*轻轻敲门」）也能让她察觉。</Text>
+            {pair && <Text>{formatText(operatorCopy.sendPair,{code:pair,minutes:numbers.defaults.pairLifetimeMs/60000})}</Text>}
+            <Text>{operatorCopy.pairHelp}</Text>
           </Flex>
         </Stack>
       )}
@@ -192,17 +196,17 @@ export function StudioPanel({
       {snapshot?.site && (
         <Stack gap="3">
           <Select
-            label="预览页面"
+            label={operatorCopy.previewPage}
             value={slug}
             onChange={(s) => s && setSlug(s)}
             options={snapshot.site.pages.map((p) => ({ value: p.slug, label: p.title }))}
           />
           <Select
-            label="预览已注册组件"
+            label={operatorCopy.previewComponent}
             value={component}
             onChange={(v) => setComponent(v ?? "")}
             options={[
-              { value: "", label: "整页" },
+              { value: "", label: operatorCopy.wholePage },
               ...Object.values(snapshot.site.components).map((p) => ({ value: p.name, label: p.name })),
             ]}
           />

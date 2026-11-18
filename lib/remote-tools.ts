@@ -1,3 +1,6 @@
+import { services } from "../config/operator/services.ts";
+import { remoteToolsErrors } from "../config/texts/errors.ts";
+import { numbers } from "../config/numbers.ts";
 import { one, stmt } from "../db";
 import { z } from "zod";
 import { toolName } from "./toolbox";
@@ -13,7 +16,7 @@ const grant = z.object({
 async function remoteDefinition(tool:z.infer<typeof grant>) {
   const list=await rpc(tool.url,"tools/list",{},null);
   const entry=list.result?.tools?.find((t:{name?:string})=>t.name===tool.name);
-  if(!entry) throw Error("服务器未提供这个工具");
+  if(!entry) throw Error(remoteToolsErrors.missingTool);
   const inputSchema=entry.inputSchema;
   if(!inputSchema || typeof inputSchema!=="object" || Array.isArray(inputSchema))
     return {inputSchema:null,notice:"服务端未声明参数，可以向站主核对用法。"};
@@ -22,7 +25,7 @@ async function remoteDefinition(tool:z.infer<typeof grant>) {
 export async function describeInstalled(alias:string) {
   const id="mcp/"+toolName.parse(alias);
   const row=await one<{value:string}>("SELECT value FROM channel_state WHERE id=?",id);
-  if(!row || JSON.parse(row.value).paused) throw Error("工具未启用");
+  if(!row || JSON.parse(row.value).paused) throw Error(remoteToolsErrors.disabled);
   const tool=grant.parse(JSON.parse(row.value));
   const definition=await remoteDefinition(tool);
   await stmt("UPDATE channel_state SET value=? WHERE id=? AND value=?",JSON.stringify({...JSON.parse(row.value),...definition}),id,row.value).run();
@@ -40,7 +43,7 @@ export async function registerRemote(value: unknown) {
     !/^([a-z\d-]+\.)+[a-z]{2,}$/i.test(u.hostname) ||
     /\.(local|internal|localhost|test)$/.test(u.hostname)
   )
-    throw Error("请输入真实的 HTTPS MCP 地址");
+    throw Error(remoteToolsErrors.invalidUrl);
   const definition=await remoteDefinition(rule);
   await stmt(
     "INSERT INTO channel_state VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
@@ -51,7 +54,7 @@ export async function registerRemote(value: unknown) {
 export async function manageRemote(alias:string,action:"test"|"revoke"|"pause"|"resume"|"run",args?:unknown) {
   const id="mcp/"+toolName.parse(alias);
   const row=await one<{value:string}>("SELECT value FROM channel_state WHERE id=?",id);
-  if(!row) throw Error("工具尚未获准");
+  if(!row) throw Error(remoteToolsErrors.notGranted);
   if(action==="revoke") {await stmt("DELETE FROM channel_state WHERE id=?",id).run();return {revoked:true};}
   if(action==="pause" || action==="resume") {
     await stmt("UPDATE channel_state SET value=json_set(value,'$.paused',json(?)) WHERE id=?",action==="pause"?"true":"false",id).run();
@@ -60,7 +63,7 @@ export async function manageRemote(alias:string,action:"test"|"revoke"|"pause"|"
   if(action==="run") return {result:await callInstalled(alias,args)};
   const tool=grant.parse(JSON.parse(row.value));
   const list=await rpc(tool.url,"tools/list",{},null);
-  if(!list.result?.tools?.some((x:{name:string})=>x.name===tool.name)) throw Error("服务端未列出该工具");
+  if(!list.result?.tools?.some((x:{name:string})=>x.name===tool.name)) throw Error(remoteToolsErrors.notListed);
   return {available:true};
 }
 async function http(
@@ -73,28 +76,28 @@ async function http(
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json, text/event-stream",
-    "MCP-Protocol-Version": "2025-06-18",
+    "MCP-Protocol-Version": services.mcp.protocolVersion,
   };
   if (session) headers["Mcp-Session-Id"] = session;
   const res = await fetch(url, {
     method: "POST",
     headers,
     body: JSON.stringify({
-      jsonrpc: "2.0",
+      jsonrpc: services.mcp.jsonRpc,
       ...(id ? { id } : {}),
       method,
       params,
     }),
     redirect: "manual",
-    signal: AbortSignal.timeout(9000),
+    signal: AbortSignal.timeout(numbers.defaults.mcpTimeoutMs),
   });
-  if (!res.ok) throw Error("远程工具不可用");
+  if (!res.ok) throw Error(remoteToolsErrors.unavailable);
   const sid = res.headers.get("Mcp-Session-Id") ?? session;
   if (!id) return { sid, data: {} };
   const body = res.body;
-  if (!body) throw Error("没有工具响应");
+  if (!body) throw Error(remoteToolsErrors.noResponse);
   const { limited } = await import("./security");
-  let raw = new TextDecoder().decode(await limited(body, 120000));
+  let raw = new TextDecoder().decode(await limited(body, numbers.defaults.mcpMaxBytes));
   if (res.headers.get("content-type")?.includes("event-stream")) {
     const lines = raw.split(/\r?\n/).filter((l) => l.startsWith("data:"));
     raw =
@@ -109,7 +112,7 @@ async function http(
         }) ?? "";
   }
   const data = JSON.parse(raw);
-  if (data.error) throw Error("远程工具拒绝了请求");
+  if (data.error) throw Error(remoteToolsErrors.denied);
   return { sid, data };
 }
 async function rpc(
@@ -122,9 +125,9 @@ async function rpc(
     url,
     "initialize",
     {
-      protocolVersion: "2025-06-18",
+      protocolVersion: services.mcp.protocolVersion,
       capabilities: {},
-      clientInfo: { name: "whale-home", version: "1.0" },
+      clientInfo: services.mcp.client,
     },
     session,
     1,
@@ -137,9 +140,9 @@ export async function callInstalled(alias: string, args: unknown) {
     "SELECT value FROM channel_state WHERE id=?",
     "mcp/" + toolName.parse(alias),
   );
-  if (!row) throw Error("工具尚未获准");
+  if (!row) throw Error(remoteToolsErrors.notGranted);
   const record=JSON.parse(row.value);
-  if(record.paused) throw Error("这项工具已暂停");
+  if(record.paused) throw Error(remoteToolsErrors.paused);
   const tool = grant.parse(record);
   const result = await rpc(
     tool.url,
@@ -147,7 +150,7 @@ export async function callInstalled(alias: string, args: unknown) {
     { name: tool.name, arguments: args ?? {} },
     null,
   );
-  if (!result.result || result.result.isError) throw Error("远程工具执行失败");
+  if (!result.result || result.result.isError) throw Error(remoteToolsErrors.failed);
   await stmt("UPDATE channel_state SET value=json_set(value,'$.lastSuccess',?) WHERE id=? AND json_extract(value,'$.url')=? AND json_extract(value,'$.name')=?",
     Date.now(),"mcp/"+alias,tool.url,tool.name).run();
   if (!tool.resultFields.length) return "已调用 " + alias + "，收到执行回执。";

@@ -1,8 +1,9 @@
+import { numbers } from "../config/numbers";
 import { all, one } from "../db";
 import type { State } from "../content/initial";
 import { shanghaiDate } from "./friend-memory";
 
-export const defaultRestMinutes = 5;
+export const defaultRestMinutes = numbers.defaults.restMinutes;
 export type RestSession = { since: number; posture: "in_bed" | "up" };
 
 // The current activity is cleared by other actions, conversations and failed attempts.

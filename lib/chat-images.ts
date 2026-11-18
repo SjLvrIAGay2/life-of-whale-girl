@@ -1,24 +1,26 @@
+import { chatImagesErrors } from "../config/texts/errors.ts";
+import { numbers } from "../config/numbers.ts";
 import { all, stmt, type ChatLine } from "../db";
 import { downloadQQ, type QQAudio } from "./qq-voice";
 
-export const maxImageBytes=6*1024*1024;
-export const maxImages=4;
+export const maxImageBytes=numbers.defaults.chatImageBytes;
+export const maxImages=numbers.defaults.chatImageCount;
 export type ChatImage={mime:string;bytes:Uint8Array};
 export function imageBytes(bytes:Uint8Array):ChatImage {
-  if (!bytes.length || bytes.length>maxImageBytes) throw Error("每张图片最多 6 MiB");
+  if (!bytes.length || bytes.length>maxImageBytes) throw Error(chatImagesErrors.size);
   const b=Buffer.from(bytes);
   let mime="";
   if (b.length>=24 && b.toString("hex",0,8)==="89504e470d0a1a0a" && b.toString("ascii",12,16)==="IHDR") mime="image/png";
   else if (b[0]===255 && b[1]===216 && b[2]===255) mime="image/jpeg";
   else if (b.toString("ascii",0,4)==="RIFF" && b.toString("ascii",8,12)==="WEBP") mime="image/webp";
   else if (/^GIF8[79]a$/.test(b.toString("ascii",0,6))) mime="image/gif";
-  if (!mime) throw Error("支持 PNG、JPEG、WebP 和 GIF 图片");
+  if (!mime) throw Error(chatImagesErrors.format);
   return {mime,bytes};
 }
 export function isQQImage(a:QQAudio) {
   return !!a && (/^image(?:\/|$)/i.test(a.content_type??"") || /\.(?:png|jpe?g|gif|webp|bmp|avif)$/i.test(a.filename??""));
 }
-export async function qqImages(input:QQAudio[]|undefined, count=maxImages) {
+export async function qqImages(input:QQAudio[]|undefined, count: number=maxImages) {
   if (!Array.isArray(input)) return [];
   const images=await Promise.all(input.filter(isQQImage).slice(0,count).map(async (a,part)=>{
     try { if(a.url) return {...imageBytes(await downloadQQ(a.url,maxImageBytes)),part}; } catch { /* Keep the placeholder. */ }
@@ -41,8 +43,8 @@ export async function turnImages(lines:ChatLine[]) {
     UNION ALL SELECT k.n,1,a.part,a.mime,a.bytes FROM inputs k JOIN messages q ON q.peer=k.peer AND q.withheld=0
       AND (q.qq_index=k.ref OR q.id='qq:'||k.ref) JOIN chat_images a ON a.message=q.id AND a.quoted=0
       WHERE NOT EXISTS(SELECT 1 FROM chat_images own WHERE own.message=k.id AND own.quoted=1)
-  ) SELECT * FROM available ORDER BY n,quoted DESC,part LIMIT 6`,JSON.stringify(keys));
-  let remaining=12*1024*1024;
+  ) SELECT * FROM available ORDER BY n,quoted DESC,part LIMIT ?`,JSON.stringify(keys),numbers.defaults.turnImageCount);
+  let remaining=numbers.defaults.turnImageBytes;
   return rows.filter(r=>{
     if(r.bytes.length>remaining) return false;
     remaining-=r.bytes.length;

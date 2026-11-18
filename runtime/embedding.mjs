@@ -1,3 +1,4 @@
+import embedding from "../config/operator/embedding.json" with { type:"json" };
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -32,7 +33,7 @@ export function localEmbedding(database) {
         if (!Array.isArray(data) || data.length !== pending.count) throw Error();
         const vectors = data.map(s => {
           const bytes = Uint8Array.from(Buffer.from(s,"base64"));
-          if (bytes.length !== 512 * 4) throw Error();
+          if (bytes.length !== embedding.dimensions * Float32Array.BYTES_PER_ELEMENT) throw Error();
           return new Float32Array(bytes.buffer);
         });
         pending.resolve(vectors);
@@ -40,10 +41,10 @@ export function localEmbedding(database) {
     });
     return proc;
   }
-  return { model:"bge-small-zh-v1.5-75c43b0-int8-cls", async encode(texts, query = false) {
+  return { model:embedding.model, async encode(texts, query = false) {
     const task = queue.then(async () => {
       const proc = connect();
-      const timer = setTimeout(() => proc.kill(),30000);
+      const timer = setTimeout(() => proc.kill(),embedding.timeoutMs);
       try {
         return await new Promise((resolve,reject) => {
           pending = {count:texts.length,resolve,reject};

@@ -1,5 +1,6 @@
+import { numbers } from "../config/numbers.ts";
 import { env } from "cloudflare:workers";
-import { all, db, stmt, type Memory } from "../db";
+import { all, db, currentOverrides, stmt, type Memory } from "../db";
 
 let indexing: Promise<number> | undefined;
 export function indexMemories() {
@@ -10,13 +11,14 @@ export function indexMemories() {
 async function indexBatch() {
   const encoder = env.WHALE_MEMORY_EMBED;
   if (!encoder) return 0;
+  const n=numbers.read(await currentOverrides());
   const rows = await all<{id:string;body:string}>(`SELECT m.id,m.body FROM memories m
     LEFT JOIN memory_vectors v ON v.id=m.id AND v.model=?
-    WHERE v.id IS NULL AND m.hidden=0 AND m.kind NOT IN ('access','working','profile','habit_sample','source_quote') ORDER BY m.rowid LIMIT 16`, encoder.model);
+    WHERE v.id IS NULL AND m.hidden=0 AND m.kind NOT IN ('access','working','profile','habit_sample','source_quote') ORDER BY m.rowid LIMIT ?`, encoder.model,n.indexRecords);
   if (!rows.length) return 0;
   const vectors:Float32Array[]=[];
-  for(let i=0;i<rows.length;i+=8)
-    vectors.push(...await encoder.encode(rows.slice(i,i+8).map(row=>row.body.slice(0,2000))));
+  for(let i=0;i<rows.length;i+=n.embeddingBatch)
+    vectors.push(...await encoder.encode(rows.slice(i,i+n.embeddingBatch).map(row=>row.body.slice(0,n.indexedChars))));
   await db().batch(rows.map((row,i) => stmt(
     "INSERT OR REPLACE INTO memory_vectors SELECT id,?,? FROM memories WHERE hidden=0 AND id=? AND body=?",
     encoder.model, new Uint8Array(vectors[i].buffer,vectors[i].byteOffset,vectors[i].byteLength), row.id, row.body,
@@ -26,7 +28,8 @@ async function indexBatch() {
 export async function semanticHits(scopes: string[], cue: string, excludeIds: string[] = []) {
   const encoder = env.WHALE_MEMORY_EMBED;
   if (!encoder || !cue.trim() || !scopes.length) return [];
-  const [query] = await encoder.encode([cue.slice(0,1200)],true);
+  const n=numbers.read(await currentOverrides());
+  const [query] = await encoder.encode([cue.slice(0,n.queryChars)],true);
   const candidates: {id:string;score:number}[] = [];
   const scopeSQL = scopes.map(() => "?").join(",");
   const excluded = new Set(excludeIds);
@@ -46,7 +49,7 @@ export async function semanticHits(scopes: string[], cue: string, excludeIds: st
       candidates.push({id:row.id,score});
     }
     candidates.sort((a,b)=>b.score-a.score);
-    candidates.splice(12);
+    candidates.splice(n.memoryCount);
     if (rows.length < 160) break;
     cursor = rows[rows.length-1].cursor;
   }

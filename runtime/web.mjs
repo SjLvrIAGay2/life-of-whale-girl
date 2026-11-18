@@ -1,3 +1,8 @@
+import { routes } from "../config/routes.ts";
+import { numbers } from "../config/numbers.ts";
+import { links } from "../config/links.ts";
+import { publicOverrides } from "../config/registry.ts";
+import { texts } from "../config/texts.ts";
 import { createServer, request as proxyRequest } from "node:http";
 import {
   readFileSync,
@@ -44,6 +49,7 @@ function getHome(){
       return { name, mode, activity, room, revision: 0, site: defaultSite, activities: [], posts: [], art: [] };
     }
     cached=JSON.parse(readFileSync(snapshot,"utf8"));
+    cached.config=publicOverrides(cached.config);
     if(existsSync(heartbeat)) {
       const beat=JSON.parse(readFileSync(heartbeat,"utf8"));
       if(beat.revision===cached.revision && beat.time>Number(cached.syncedAt??0)) cached.syncedAt=beat.time;
@@ -80,10 +86,10 @@ function streamFile(res, f, type) {
     return false;
   }
 }
-const publicPort = Number(process.env.PORT || 19531);
-const siteOrigin = process.env.WHALE_ORIGIN || `http://127.0.0.1:${publicPort}`;
+const publicPort = Number(process.env.PORT || numbers.defaults.publicPort);
+const siteOrigin = process.env.WHALE_ORIGIN || `http://${links.defaults.loopback}:${publicPort}`;
 const mirrorPublic = process.env.WHALE_MIRROR_PUBLIC ? readFileSync(process.env.WHALE_MIRROR_PUBLIC) : null;
-const forwardPort = process.env.WHALE_FORWARD_PORT || (mirrorPublic ? "19532" : "");
+const forwardPort = process.env.WHALE_FORWARD_PORT || (mirrorPublic ? String(numbers.defaults.relayPort) : "");
 const pictureId = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 function savePicture(drawing) {
   if (!pictureId.test(drawing?.id)) return false;
@@ -104,7 +110,7 @@ function savePicture(drawing) {
 createServer(async (req, res) => {
   try {
     const u = new URL(req.url, siteOrigin);
-    if(req.method==="GET" && u.pathname==="/api/v1/life/revisions") {
+    if(req.method==="GET" && u.pathname===routes.revisions) {
       const revision=getHome().revision;
       res.writeHead(200,{"Content-Type":"text/event-stream","Cache-Control":"no-store","X-Accel-Buffering":"no"});
       res.write(revisionEvent(revision));
@@ -113,13 +119,13 @@ createServer(async (req, res) => {
       res.on("close",()=>{clearInterval(heartbeat);listeners.delete(res);});
       return;
     }
-    if (u.pathname === "/internal/mirror" && req.method === "POST") {
+    if (u.pathname === routes.mirror && req.method === "POST") {
       if (!mirrorPublic) return reply(res, 403, "text/plain", "Forbidden");
       const ts = req.headers["x-whale-timestamp"] ?? "",
         sig = req.headers["x-whale-signature"] ?? "";
       if (
         !/^\d{13}$/.test(ts) ||
-        Math.abs(Date.now() - Number(ts)) > 120000 ||
+        Math.abs(Date.now() - Number(ts)) > numbers.defaults.mirrorClockSkewMs ||
         !/^([a-f\d]{2}){64}$/i.test(sig)
       )
         return reply(res, 403, "text/plain", "Forbidden");
@@ -127,7 +133,7 @@ createServer(async (req, res) => {
       const chunks = [];
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > 24 * 1024 * 1024)
+        if (size > numbers.defaults.mirrorMaxBytes)
           return reply(res, 413, "text/plain", "Too large");
         chunks.push(chunk);
       }
@@ -185,6 +191,7 @@ createServer(async (req, res) => {
       }
       data.home.posts.sort((a,b)=>b.day.localeCompare(a.day));
       data.home.art.sort((a,b)=>b.made-a.made || b.id.localeCompare(a.id));
+      data.home.config=publicOverrides(data.home.config);
       data.home.syncedAt=Number(ts);
       for (const picture of data.drawings ?? []) {
         if (
@@ -212,15 +219,15 @@ createServer(async (req, res) => {
       for(const viewer of listeners) viewer.write(revisionEvent(cached.revision));
       return reply(res, 200, "application/json", '{"ok":true}');
     }
-    if (u.pathname === "/api/v1/life/home" && req.method === "GET")
+    if (u.pathname === routes.homeData && req.method === "GET")
       return reply(
         res,
         200,
         "application/json; charset=utf-8",
         JSON.stringify(publicSummary(archivePage(getHome(),u.searchParams))),
       );
-    if(u.pathname==="/feed.xml" && req.method==="GET") return reply(res,200,"application/rss+xml; charset=utf-8",rss(getHome(),siteOrigin));
-    if(u.pathname==="/api/v1/life/work-history" && req.method==="GET" && !u.searchParams.has("private")) {
+    if(u.pathname===routes.feed && req.method==="GET") return reply(res,200,"application/rss+xml; charset=utf-8",rss(getHome(),siteOrigin));
+    if(u.pathname===routes.workHistory && req.method==="GET" && !u.searchParams.has("private")) {
       const id=u.searchParams.get("id"),before=Number(u.searchParams.get("before"))||Number.MAX_SAFE_INTEGER,h=getHome();
       if(u.searchParams.has("art")) {
         const art=u.searchParams.get("art");
@@ -234,7 +241,7 @@ createServer(async (req, res) => {
       const steps=h.series?.some(w=>w.id===id)?(h.history??[]).filter(s=>s.work===id && s.position<before).sort((a,b)=>b.position-a.position).slice(0,33):[];
       return reply(res,200,"application/json",JSON.stringify({steps:steps.slice(0,32),more:steps.length>32}));
     }
-    if (u.pathname.startsWith("/picture/") && req.method === "GET") {
+    if (u.pathname.startsWith(routes.picture) && req.method === "GET") {
       const id = u.pathname.slice(9);
       if (
         pictureId.test(id) &&
@@ -244,7 +251,7 @@ createServer(async (req, res) => {
       )
         return;
     }
-    if(u.pathname==="/api/v1/life/activity" && req.method==="GET") {
+    if(u.pathname===routes.activityData && req.method==="GET") {
       const item=(getHome().activityArchive??getHome().activities??[]).find(a=>a.id===u.searchParams.get("id"));
       return reply(res,item?200:404,"application/json; charset=utf-8",JSON.stringify(item??{error:"没有这次公开活动"}));
     }
@@ -262,7 +269,7 @@ createServer(async (req, res) => {
         if (req.headers[k]) headers[k] = req.headers[k];
       const request = proxyRequest(
         {
-          hostname: "127.0.0.1",
+          hostname: links.defaults.loopback,
           port: Number(forwardPort),
           path: u.pathname + u.search,
           method: req.method,
@@ -309,9 +316,9 @@ createServer(async (req, res) => {
         res,
         200,
         "text/html; charset=utf-8",
-        '<!doctype html><html lang="zh-CN" data-host="mac"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="我是鲸鱼娘。这里是我的小屋、动态和画册。"><title>' +
+        '<!doctype html><html lang="zh-CN" data-host="mac"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="' + escape(texts.read(h.config).siteDescription) + '"><title>' +
           escape(h.name) +
-          '</title><link rel="alternate" type="application/rss+xml" href="/feed.xml"><link rel="icon" href="/whale.svg"><link rel="stylesheet" href="' + assetUrl("site.css") + '"></head><body><div id="root"></div><script type="module" src="' + assetUrl("site.js") + '"></script></body></html>',
+          '</title><link rel="alternate" type="application/rss+xml" href="' + escape(links.read(h.config).feed) + '"><link rel="icon" href="' + escape(links.read(h.config).favicon) + '"><link rel="stylesheet" href="' + assetUrl("site.css") + '"></head><body><div id="root"></div><script type="module" src="' + assetUrl("site.js") + '"></script></body></html>',
       );
     }
     const file = resolve(root, "." + decodeURIComponent(u.pathname)),
@@ -329,4 +336,4 @@ createServer(async (req, res) => {
       );
     else res.end();
   }
-}).listen(publicPort, "127.0.0.1");
+}).listen(publicPort, links.defaults.loopback);

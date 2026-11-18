@@ -79,7 +79,7 @@ node --env-file=.env.web outputs/self-hosted/server/web.mjs
 
 ## 代码与素材
 
-网页在 `app/`，角色的行动、阅读、创作和记忆逻辑在 `lib/`，初始存档和页面结构从 `content/` 进入。`runtime/` 提供自托管的两个进程，`worker/` 提供 Cloudflare Workers 入口，`drizzle/` 保存数据库迁移。
+网页在 `app/`，角色的行动、阅读、创作和记忆逻辑在 `lib/`，初始存档和页面结构从 `content/` 进入。作息、角色提示词、工具用法和默认房间设置集中在 `config/`。`runtime/` 提供自托管的两个进程，`worker/` 提供 Cloudflare Workers 入口，`drizzle/` 保存数据库迁移。
 
 角色绘图参考和聊天表情来自 DeepSeek 鲸鱼娘同人素材库，素材库署名为 Copyright (c) 2026 TreapGoGo。各作品沿用作者标明的使用条件。[素材库](https://treapgogo.github.io/deepseek-whale-girl/index.html) · [素材许可说明](https://github.com/TreapGoGo/deepseek-whale-girl#代码内容与素材许可)
 

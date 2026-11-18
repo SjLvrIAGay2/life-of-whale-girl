@@ -1,3 +1,4 @@
+import { cabinStoreErrors } from "../config/texts/errors.ts";
 import { all, stmt } from "../db";
 import { createHash } from "node:crypto";
 import { furniture, type ObjectKind, type RoomItem, type State } from "../content/initial";
@@ -47,7 +48,7 @@ export class Cabin extends Space {
   }
   owned(id: string) {
     const item = this.get(id);
-    if (!this.usable(item)) throw Error("这件物品不在自己的可查看范围内");
+    if (!this.usable(item)) throw Error(cabinStoreErrors.outOfScope);
     return item;
   }
   add(id: string, type: string, def = this.types.get(type)) {
@@ -76,7 +77,7 @@ export class Cabin extends Space {
     budget: { count: number },
   ): Item {
     if (ancestors.includes(type)) throw Error("预装内容循环引用了类型 " + type);
-    if (++budget.count > 512) throw Error("一次生成的对象超过 512 件");
+    if (++budget.count > 512) throw Error(cabinStoreErrors.spawnLimit);
     const def = this.types.get(type);
     if (!def) throw Error("目录中没有类型 " + type);
     const game = Object.values(def.actions).find((b) => "capability" in b && b.capability === "game");
@@ -114,18 +115,18 @@ export class Cabin extends Space {
     this.touch(item);
   }
   remove(item: Item) {
-    if (item.id === "cabin") throw Error("小屋地面是坐标原点");
-    if (item.source) throw Error("要保留这件物品的记录，请用 stow 收起");
-    if (this.children(item.id).length) throw Error("物品中还有内容；可整体收起，或先移出里面的物品");
+    if (item.id === "cabin") throw Error(cabinStoreErrors.fixedOrigin);
+    if (item.source) throw Error(cabinStoreErrors.keepHistory);
+    if (this.children(item.id).length) throw Error(cabinStoreErrors.containerNotEmpty);
     if ([...this.items.values()].some((i) => i.refs.includes(item.id)))
-      throw Error("另一个对象仍引用这件物品");
+      throw Error(cabinStoreErrors.referenced);
     this.relocate(item, null);
     this.items.delete(item.id);
     this.changed.delete(item.id);
     this.removed.add(item.id);
   }
   stow(item: Item) {
-    if (item.id === "cabin") throw Error("小屋地面是坐标原点");
+    if (item.id === "cabin") throw Error(cabinStoreErrors.fixedOrigin);
     this.accessible(item);
     this.relocate(item, null);
     this.touch(item);
@@ -256,8 +257,8 @@ export async function arrangeFurniture(state: State, move: LegacyMove) {
   const scene = cabin.scene();
   let item: Item;
   if (move.operation === "add") {
-    if (!kind) throw Error("添置家具需要指定种类");
-    if (scene.length >= 18) throw Error("小屋已满");
+    if (!kind) throw Error(cabinStoreErrors.furnitureKind);
+    if (scene.length >= 18) throw Error(cabinStoreErrors.roomFull);
     const id = cabin.items.has(kind) ? kind + "-" + crypto.randomUUID().slice(0, 6) : kind;
     item = cabin.addFurniture({
       id,
@@ -270,7 +271,7 @@ export async function arrangeFurniture(state: State, move: LegacyMove) {
       move.id !== undefined
         ? scene.find((i) => i.id === move.id && (!kind || i.kind === kind))
         : (scene.find((i) => i.id === kind) ?? scene.find((i) => i.kind === kind));
-    if (!entry) throw Error("屋里找不到这个物件，请选小屋里现有的编号");
+    if (!entry) throw Error(cabinStoreErrors.missingFurniture);
     item = cabin.get(entry.id);
     cabin.accessible(item);
     if (move.operation === "remove") cabin.stow(item);

@@ -1,3 +1,6 @@
+import { routes } from "../config/routes.ts";
+import { numbers } from "../config/numbers.ts";
+import { links } from "../config/links.ts";
 import { env, sqlite } from "./bindings.mjs";
 import { inventory,residentBackups,restoreDrill } from "./recovery.mjs";
 import { failureReason } from "../lib/diagnostics";
@@ -257,7 +260,7 @@ function reportFailure(operation, error) {
 async function sendMirror(body) {
   const ts = String(Date.now());
   const signature = sign(null, Buffer.from(ts + "\n" + body), mirrorPrivate).toString("hex");
-  const r = await fetch(site + "/internal/mirror", {
+  const r = await fetch(site + routes.mirror, {
     method: "POST",
     redirect: "error",
     headers: {
@@ -401,7 +404,7 @@ const qqController = new AbortController();
 const qqDriver = async (payload) => {
   if (payload.action === "gateway") {
     const token = await qqToken();
-    const r = await fetch("https://api.sgroup.qq.com/gateway", {
+    const r = await fetch(links.defaults.qqGateway, {
       headers: { Authorization: "QQBot " + token },
       signal: AbortSignal.timeout(10000),
     });
@@ -445,10 +448,10 @@ async function serve(req) {
     if(probe==="mirror") {lastBeat=0;await mirror();return Response.json({result:JSON.parse((await one("SELECT value FROM channel_state WHERE id='health/mirror'")).value)});}
   }
   let response;
-  if (u.pathname.startsWith("/picture/"))
+  if (u.pathname.startsWith(routes.picture))
     response = await picture(req, { params: Promise.resolve({ id: op }) });
   else if (
-    u.pathname === "/api/v1/life/" + op && [
+    u.pathname === routes.life + op && [
       "admin",
       "clock","studio","home","activity","work-history",
       "health",
@@ -516,7 +519,7 @@ const server = createServer(async (r, s) => {
     s.end(JSON.stringify({ error: "我的小屋暂时忙，请稍后再试。" }));
   }
 });
-server.listen(Number(env.WHALE_AGENT_PORT || 19530), "127.0.0.1");
+server.listen(Number(env.WHALE_AGENT_PORT || numbers.defaults.residentPort), links.defaults.loopback);
 await house();
 await recoverQQDeliveries();
 await backupResident();

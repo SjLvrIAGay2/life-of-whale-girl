@@ -1,3 +1,5 @@
+import { cabinModelErrors } from "../config/texts/errors.ts";
+import { builtinDefinitions } from "../config/objects";
 import { z } from "zod";
 import type { ObjectKind, RoomItem } from "../content/initial";
 import { objectRecipe } from "./toolbox";
@@ -140,7 +142,7 @@ export type PublicItem = {
 export const boxVolume = ([w, d, h]: Properties["size"]) => w * d * h;
 export const volume = (props: Properties) => props.volumeCm3 ?? boxVolume(props.size);
 export function checkDimensions(props: Properties, regions: Regions) {
-  if (volume(props) > boxVolume(props.size) + 1e-8) throw Error("声明的体积超过外部尺寸");
+  if (volume(props) > boxVolume(props.size) + 1e-8) throw Error(cabinModelErrors.excessVolume);
   for (const r of Object.values(regions))
     if (r.relation !== "installed") {
       if (r.relation === "inside" && r.size.some((n, i) => n > props.size[i]))
@@ -155,124 +157,6 @@ export function instantiate(id: string, type: string, def: Definition): Item {
   return { id, type, props, regions, state, actions, versions: {}, refs: [], at: null, visibility: "detail" };
 }
 
-const built = (raw: z.input<typeof definition>) => definition.parse(raw);
-type Size = Properties["size"];
-const surface = (label: string, shape: Size, loadG: number): Region => ({
-  label,
-  relation: "on",
-  size: shape,
-  loadG,
-});
-const apps: Region = { label: "软件安装位", relation: "installed", capacityMB: 8192 };
-const software = (name: string, installMB: number, capability: (typeof capabilities)[number]) =>
-  built({ name, size: [1, 1, 1], massG: 0, installMB, actions: { open: { capability } } });
-export const builtins: Record<string, Definition> = {
-  cabin: built({
-    name: "小屋",
-    size: [1000, 1000, 300],
-    massG: 0,
-    regions: {
-      floor: surface("地面", [1000, 1000, 300], 1e9),
-      wall: { label: "墙面", relation: "hang", size: [1000, 280, 80], loadG: 50000 },
-    },
-  }),
-  sill: built({
-    name: "窗沿",
-    size: [100, 24, 4],
-    massG: 3000,
-    regions: { top: surface("窗沿台面", [100, 24, 150], 12000) },
-  }),
-  desk: built({
-    name: "书桌",
-    size: [120, 62, 76],
-    massG: 19000,
-    regions: {
-      top: surface("桌面", [120, 62, 190], 40000),
-      fitting: { label: "抽屉槽", relation: "part", size: [50, 40, 16], loadG: 12000 },
-    },
-    contents: [{ type: "drawer", region: "fitting" }],
-  }),
-  drawer: built({
-    name: "抽屉",
-    size: [48, 38, 14],
-    massG: 1500,
-    regions: {
-      inside: {
-        label: "抽屉内腔",
-        relation: "inside",
-        size: [45, 35, 12],
-        loadG: 7000,
-        gate: "open",
-        opening: [45, 11],
-      },
-    },
-    state: { open: true },
-    actions: { open: { capability: "open" }, close: { capability: "close" } },
-  }),
-  computer: built({ name: "电脑", size: [45, 22, 35], massG: 4500, regions: { apps } }),
-  bed: built({
-    name: "床",
-    size: [190, 95, 50],
-    massG: 25000,
-    regions: { top: surface("床面", [190, 95, 200], 160000) },
-  }),
-  plant: built({ name: "绿植", size: [18, 18, 40], massG: 2000 }),
-  lamp: built({ name: "落地灯", size: [24, 24, 125], massG: 4100 }),
-  shelf: built({
-    name: "书架",
-    size: [68, 30, 145],
-    massG: 14000,
-    regions: { shelf: surface("搁板", [65, 28, 40], 15000) },
-  }),
-  chair: built({
-    name: "椅子",
-    size: [42, 40, 75],
-    massG: 6200,
-    regions: { seat: surface("椅面", [40, 38, 80], 90000) },
-  }),
-  alarm: built({ name: "床头闹钟", size: [10, 6, 10], massG: 180 }),
-  box: built({
-    name: "盒子",
-    size: [20, 12, 7],
-    massG: 120,
-    regions: {
-      inside: { label: "内腔", relation: "inside", size: [18, 10, 6], loadG: 1200, opening: [18, 6] },
-      top: surface("盒盖顶面", [20, 12, 30], 600),
-    },
-  }),
-  phone: built({
-    name: "手机",
-    size: [15, 7, 0.9],
-    massG: 180,
-    regions: { apps },
-    contents: [
-      { type: "bili", region: "apps" },
-      { type: "heybox", region: "apps" },
-      { type: "browser", region: "apps" },
-    ],
-  }),
-  bili: software("哔哩哔哩", 360, "bili"),
-  heybox: software("小黑盒", 180, "heybox"),
-  browser: software("浏览器", 120, "browser"),
-  website: software("小屋网站", 1, "website"),
-  board: built({
-    name: "五子棋盘",
-    size: [25, 25, 2],
-    massG: 380,
-    actions: { play: { capability: "game" } },
-  }),
-  puzzle: built({
-    name: "推箱子",
-    size: [16, 12, 2],
-    massG: 150,
-    actions: { play: { capability: "game", game: "sokoban" } },
-  }),
-  work: built({ name: "作品", size: [21, 15, 1], massG: 80, actions: { open: { capability: "work" } } }),
-  picture: built({
-    name: "画作",
-    size: [20, 15, 0.1],
-    massG: 5,
-    actions: { open: { capability: "picture" } },
-  }),
-  keepsake: built({ name: "纪念物", size: [1, 1, 1], massG: 0 }),
-};
+export const builtins: Record<string, Definition> = Object.fromEntries(
+  Object.entries(builtinDefinitions).map(([name, raw]) => [name, definition.parse(raw)]),
+);

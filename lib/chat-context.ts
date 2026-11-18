@@ -1,3 +1,4 @@
+import { numbers } from "../config/numbers";
 import { all, type ChatLine } from "../db";
 import type { State } from "../content/initial";
 import { communitySticker } from "./community-art";
@@ -118,7 +119,8 @@ export async function chatContext(peers: string[], inbox: ChatLine[],state:State
     else turns.push([line]);
   }
   if (rowsBeforeWindow && sameTurn(rowsBeforeWindow, turns[0][0])) turns.shift();
-  const window = turns.slice(-16);
+  const n=numbers.read(state.config);
+  const window = turns.slice(-n.chatHistoryTurns);
   const lines=[...window.flat(),...inbox];
   const [quotes,timings]=await Promise.all([quotedMessages(lines),messageTimings(lines,state,now)]);
   const part=(line:ChatLine,limit:number)=>({...chatPart(line,quotes,limit),timing:timings.get(line.id)});
@@ -126,7 +128,7 @@ export async function chatContext(peers: string[], inbox: ChatLine[],state:State
     speaker: speaker(turn[0].side),
     channel: channel(turn[0].peer),
     time: shanghaiDate(turn[0].made),
-    messages: turn.map(line => part(line,640)),
+    messages: turn.map(line => part(line,n.chatHistoryChars)),
   }));
   const unread = inbox.map(line => part(line,line.body.length));
   const recentMemoryIds = window.flat().map(line => "chat-" + line.side + "-" + line.id);
@@ -148,10 +150,9 @@ type ChatPrompt = Pick<ChatContext, "recent"> & {
   context: unknown[];
   friendCard: { facts: unknown[]; promises: unknown[] };
 };
-export function fitChatPrompt(data: ChatPrompt & Record<string, unknown>): string {
+export function fitChatPrompt(data: ChatPrompt & Record<string, unknown>, limit = numbers.defaults.chatContextChars): string {
   // Drop complete, lower-priority records. Always send the latest exchange and the whole unread turn.
   let json = JSON.stringify(data);
-  const limit = 24000;
   const optional=[data.references,data.stickers,data.episodeSources,data.art,data.sharedMemories,data.works,data.expressionGuide]
     .filter((items):items is unknown[]=>Array.isArray(items));
   const lastIncoming=data.recent.findLastIndex(turn=>turn.speaker==="好友");

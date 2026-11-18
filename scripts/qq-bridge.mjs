@@ -188,6 +188,7 @@ async function serveReads(send, signal) {
       for (const job of jobs) {
         if (job.request.source !== "bili") continue;
         const observation = await readMedia(job.request, {
+          overrides: job.overrides,
           biliCookie: process.env.BILI_COOKIE,
         });
         await send({

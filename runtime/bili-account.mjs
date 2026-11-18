@@ -1,3 +1,4 @@
+import { links } from "../config/links.ts";
 import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -5,9 +6,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { parseEnv } from "node:util";
 import { readMedia } from "../lib/media";
 
-const passport = "https://passport.bilibili.com";
+const passport = links.defaults.biliPassport;
 const [command, file = join(homedir(), ".local/share/whale-home/resident.env")] = process.argv.slice(2);
-const headers = { Referer: "https://www.bilibili.com/", "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36" };
+const headers = { Referer: links.defaults.biliSite + "/", "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36" };
 
 async function api(url, cookie) {
   const response = await fetch(url, {
@@ -24,7 +25,7 @@ async function login() {
   const endpoint = passport + "/x/passport-login/web/qrcode/";
   const { data } = await api(endpoint + "generate");
   const qr = new URL(data.url);
-  if (![passport, "https://account.bilibili.com"].includes(qr.origin) || qr.username || qr.password || !data.qrcode_key)
+  if (![passport, links.defaults.biliAccount].includes(qr.origin) || qr.username || qr.password || !data.qrcode_key)
     throw Error("没有收到官方登录二维码");
   console.log(qr.href);
   const poll = new URL(endpoint + "poll");
@@ -52,7 +53,7 @@ async function login() {
     }
     if (!cookies.has("SESSDATA")) throw Error("哔哩哔哩没有返回登录会话，请重新扫码");
     const cookie = [...cookies].map(([k, v]) => k + "=" + v).join("; ");
-    if (!(await api("https://api.bilibili.com/x/web-interface/nav", cookie)).data.isLogin)
+    if (!(await api(links.defaults.biliApi + "/x/web-interface/nav", cookie)).data.isLogin)
       throw Error("哔哩哔哩未确认登录");
     const original = await readFile(file, "utf8");
     const updated = original.replace(/^(?:export\s+)?BILI_COOKIE=.*(?:\r?\n|$)/gm, "");

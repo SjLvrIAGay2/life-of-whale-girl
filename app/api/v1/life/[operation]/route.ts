@@ -1,3 +1,7 @@
+import { apiErrors } from "../../../../../config/texts/errors.ts";
+import { numbers } from "../../../../../config/numbers.ts";
+import { links } from "../../../../../config/links.ts";
+import { healthCheck } from "../../../../../config/prompts/tasks";
 import { env, waitUntil } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import {
@@ -6,7 +10,7 @@ import {
   db,
   one,
   stmt,
-  currentSetting,
+  currentSetting, currentOverrides,
   saveVersion,
   house,
   commit,
@@ -61,15 +65,15 @@ export async function GET(req: Request, c: Ctx) {
   if (op === "home") return json(await publicPage(new URL(req.url).searchParams));
   if(op==="activity") {
     const item=await publicActivity((await house()).state,new URL(req.url).searchParams.get("id")??"");
-    return json(item??{error:"没有这次公开活动"},item?200:404);
+    return json(item??{error:apiErrors.missingActivity},item?200:404);
   }
   if(op==="studio") {
-    if(!operator(req)) return json({error:"需要站主凭据"},401);
+    if(!operator(req)) return json({error:apiErrors.ownerCredentials},401);
     return json({catalog:await studioCatalog(),...((await editSite({op:"inspect"},Date.now(),publicHome)).result as object)});
   }
   if(op==="work-history") {
     const u=new URL(req.url), scope="public";
-    if(u.searchParams.has("private")) return json({error:"入口不可用"},404);
+    if(u.searchParams.has("private")) return json({error:apiErrors.unavailable},404);
     if(u.searchParams.has("art")) return json(await artProcess(scope,u.searchParams.get("art")!));
     const steps=await workHistory(scope,u.searchParams.get("id")??"",Number(u.searchParams.get("before"))||Number.MAX_SAFE_INTEGER,33);
     return json({steps:steps.slice(0,32),more:steps.length>32});
@@ -108,13 +112,13 @@ export async function GET(req: Request, c: Ctx) {
       tools:(await all<{value:string}>("SELECT value FROM channel_state WHERE id LIKE 'mcp/%' ORDER BY id")).map(row=>JSON.parse(row.value)),
     });
   }
-  return json({ error: "入口不可用" }, op === "admin" ? 401 : 404);
+  return json({ error: apiErrors.unavailable }, op === "admin" ? 401 : 404);
 }
 export async function POST(req: Request, c: Ctx) {
   const { operation: op } = await c.params;
   try {
     if (op === "qq") return await qqEvent(req);
-    if (!safeOrigin(req)) return json({ error: "来源不匹配" }, 403);
+    if (!safeOrigin(req)) return json({ error: apiErrors.origin }, 403);
     if (op === "qq-bridge") {
       const key = req.headers.get("x-whale-bridge") ?? "",
         stored = await one<{ value: string }>(
@@ -124,7 +128,7 @@ export async function POST(req: Request, c: Ctx) {
         !stored ||
         !same(createHash("sha256").update(key).digest("hex"), stored.value)
       )
-        return json({ error: "需要桥接凭据" }, 401);
+        return json({ error: apiErrors.bridgeCredentials }, 401);
       const b = await input(req, 88000);
       if (b.action === "ready") {
         await stmt(
@@ -147,11 +151,11 @@ export async function POST(req: Request, c: Ctx) {
       if (b.action === "gateway") {
         if (!(await hasQQ())) return json({ status: "unconfigured" }, 409);
         const token = await qqToken();
-        const r = await fetch("https://api.sgroup.qq.com/gateway", {
+        const r = await fetch(links.defaults.qqGateway, {
           headers: { Authorization: "QQBot " + token },
           signal: AbortSignal.timeout(8000),
         });
-        if (!r.ok) return json({ error: "无法连接 QQ 网关" }, 502);
+        if (!r.ok) return json({ error: apiErrors.qqGateway }, 502);
         const { url } = await r.json<{ url: string }>();
         return json({ url, token });
       }
@@ -159,7 +163,7 @@ export async function POST(req: Request, c: Ctx) {
         await acceptQQ(b.event);
         return json({ ok: true });
       }
-      return json({ error: "未知操作" }, 400);
+      return json({ error: apiErrors.unknownOperation }, 400);
     }
     if (op === "clock") {
       const dynamicKey = req.headers.get("x-whale-clock") ?? "";
@@ -176,7 +180,7 @@ export async function POST(req: Request, c: Ctx) {
             stored.value,
             createHash("sha256").update(dynamicKey).digest("hex"),
           ));
-      if (!ok) return json({ error: "需要调度凭据" }, 401);
+      if (!ok) return json({ error: apiErrors.schedulerCredentials }, 401);
       const result = await tick("clock").finally(() => deliverQQ());
       waitUntil(processPainting().then(()=>deliverQQ()));
       await stmt(
@@ -186,12 +190,12 @@ export async function POST(req: Request, c: Ctx) {
       return json(result);
     }
     if (!["studio","health","clock-key","bridge-key","qq-config","qq-pair","mcp","media","recall","setting","room","name"].includes(op))
-      return json({error:"入口不可用"},404);
-    if (!operator(req)) return json({ error: "需要站主凭据" }, 401);
-    const b = await input(req,op==="studio"?80000:24000);
+      return json({error:apiErrors.unavailable},404);
+    if (!operator(req)) return json({ error: apiErrors.ownerCredentials }, 401);
+    const b = await input(req,op==="studio"?80000:numbers.defaults.requestMaxBytes);
     if(op==="studio") {
       const now=Date.now(),lock=await tickLock(now);
-      if(!lock) return json({error:"常驻端正保存另一个动作，请稍后重试"},409);
+      if(!lock) return json({error:apiErrors.savingLocal},409);
       try {
         const {state}=await house();
         const {writes,result}=await editSite(b,now,publicHome);
@@ -201,23 +205,23 @@ export async function POST(req: Request, c: Ctx) {
       } finally {await unlock(lock);}
     }
     if(op==="health") {
-      if(!["model","voice","qq","embedding"].includes(b.probe)) return json({error:"该检查需要在常驻主机运行"},400);
+      if(!["model","voice","qq","embedding"].includes(b.probe)) return json({error:apiErrors.hostOnly},400);
       const began=Date.now();
       let status="ok",detail:string|undefined;
       try {
         if (b.probe === "model") {
-          const reply = await think('连通性检查。原样返回用户给出的 JSON 对象 {"ok":true}。保留布尔值。',
+          const reply = await think(healthCheck,
             { ok: true }, began, "activity", undefined, "health");
-          if (reply?.ok !== true) throw Error("模型响应格式有误");
+          if (reply?.ok !== true) throw Error(apiErrors.invalidModel);
         }
         if(b.probe==="voice") await synthesize("连通性检查。");
         if(b.probe==="qq") {
-          const token=await qqToken(),r=await fetch("https://api.sgroup.qq.com/gateway",{headers:{Authorization:"QQBot "+token},signal:AbortSignal.timeout(9000)});
-          if(!r.ok || !String((await r.json<{url:string}>()).url).startsWith("wss://")) throw Error("无法连接网关");
+          const token=await qqToken(),r=await fetch(links.defaults.qqGateway,{headers:{Authorization:"QQBot "+token},signal:AbortSignal.timeout(9000)});
+          if(!r.ok || !String((await r.json<{url:string}>()).url).startsWith("wss://")) throw Error(apiErrors.gateway);
         }
         if(b.probe==="embedding") {
           const vector=await env.WHALE_MEMORY_EMBED?.encode(["本地语义连通性检查"],true);
-          if(!vector?.[0]?.length) throw Error("本地语义模型离线");
+          if(!vector?.[0]?.length) throw Error(apiErrors.encoderOffline);
         }
       }catch(e){status="error";detail=failureReason(e);}
       const result={time:began,status,detail,elapsed:Date.now()-began};
@@ -256,6 +260,7 @@ export async function POST(req: Request, c: Ctx) {
     if (op === "media") {
       return json(
         await readMedia(b, {
+          overrides: await currentOverrides(),
           biliCookie: env.BILI_COOKIE,
           heyCookie: env.HEYBOX_COOKIE,
         }),
@@ -278,7 +283,7 @@ export async function POST(req: Request, c: Ctx) {
           name,
         )
       )
-        throw Error("不能修改该设置");
+        throw Error(apiErrors.restrictedSetting);
       const prev = await currentSetting(name);
       let value: string;
       if (b.restore) {
@@ -287,7 +292,7 @@ export async function POST(req: Request, c: Ctx) {
           b.restore,
           name,
         );
-        if (!old) throw Error("版本不存在");
+        if (!old) throw Error(apiErrors.missingVersion);
         value = old.value;
       } else if (name.startsWith("tool-")) {
         await testRecipe(b.value);
@@ -298,7 +303,7 @@ export async function POST(req: Request, c: Ctx) {
           !b.value.trim() ||
           b.value.length > 2000
         )
-          throw Error("设定文本长度有误");
+          throw Error(apiErrors.settingLength);
         value = b.value.trim();
       }
       await saveVersion(name, value, prev?.id ?? null, Date.now()).run();
@@ -307,7 +312,7 @@ export async function POST(req: Request, c: Ctx) {
     if (op === "room" || op === "name") {
       const now = Date.now(),
         token = await tickLock(now);
-      if (!token) return json({ error: "鲸鱼娘正忙，请稍后再试" }, 409);
+      if (!token) return json({ error: apiErrors.busy }, 409);
       try {
         const { state } = await house();
         const writes:D1PreparedStatement[]=[];
@@ -318,7 +323,7 @@ export async function POST(req: Request, c: Ctx) {
             !b.name.trim() ||
             b.name.length > 40
           )
-            throw Error("站名须在四十字以内");
+            throw Error(apiErrors.nameLength);
           state.name = b.name.trim();
         }
         await commit(token, state, writes);
@@ -327,7 +332,7 @@ export async function POST(req: Request, c: Ctx) {
         await unlock(token);
       }
     }
-    return json({ error: "未知操作" }, 404);
+    return json({ error: apiErrors.unknownOperation }, 404);
   } catch (ex) {
     return json({ error: cleanError(ex) }, op === "clock" ? 503 : 400);
   }

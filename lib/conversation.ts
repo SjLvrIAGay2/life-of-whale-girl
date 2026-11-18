@@ -1,3 +1,6 @@
+import { numbers } from "../config/numbers.ts";
+import type { Overrides } from "../config/options.ts";
+import { currentOverrides } from "../db";
 import { createHash } from "node:crypto";
 import { all, one, stmt, type ChatLine } from "../db";
 import { channelPreference, contactAllowed, contactPreferences } from "./contact-preferences";
@@ -21,8 +24,8 @@ export async function relatedPeers(identity: string) {
   return [identity, ...peers.map((p) => p.id.slice(7))];
 }
 
-export const chatPause = 12000;
-export const maxBurst = 60000;
+export const chatPause = numbers.defaults.chatPauseMs;
+export const maxBurst = numbers.defaults.chatBurstMs;
 const unread = "peer LIKE 'qq-%' AND EXISTS (SELECT 1 FROM channel_state WHERE id='friend/'||messages.peer) AND side='in' AND handled_at IS NULL AND withheld=0";
 export function interactionText(body:string) {
   const text=body.trim();
@@ -51,10 +54,14 @@ export async function interactionContext(inbox:ChatLine[]) {
     return mark || (!line.voice && interactionText(line.body)) ? [{source:index+1,...(mark??{receivedMode:"unknown",sleepStarted:null})}] : [];
   });
 }
-const pauseSQL = `CASE WHEN trim(body) LIKE '等等%' OR trim(body) LIKE '等一下%' OR trim(body) LIKE '我还没说完%' OR trim(body) LIKE '等我一下%' THEN 20000
-  WHEN image_count>0 AND trim(body)='' THEN 15500
-  WHEN image_count=0 AND length(trim(body))>5 AND substr(trim(body),-1) IN ('？','?','！','。') THEN 6500 ELSE 12000 END`;
-export async function nextInbox(peer?: string, sleepOnly=false) {
+const pauseSQL = `CASE WHEN trim(body) LIKE '等等%' OR trim(body) LIKE '等一下%' OR trim(body) LIKE '我还没说完%' OR trim(body) LIKE '等我一下%' THEN ?
+  WHEN image_count>0 AND trim(body)='' THEN ?
+  WHEN image_count=0 AND length(trim(body))>5 AND substr(trim(body),-1) IN ('？','?','！','。') THEN ? ELSE ? END`;
+function pauses(n:typeof numbers.defaults) {
+  return [n.chatWaitingMs,n.chatImagePauseMs,n.chatPunctuatedMs,n.chatPauseMs];
+}
+export async function nextInbox(peer?: string, sleepOnly=false, overrides?:Overrides) {
+  const n=numbers.read(overrides ?? await currentOverrides());
   return one<{ peer: string; due: number }>(
     `WITH pending AS (
        SELECT peer,made,batch_id,rowid AS position,${pauseSQL} AS pause,
@@ -63,11 +70,12 @@ export async function nextInbox(peer?: string, sleepOnly=false) {
        WINDOW timeline AS (PARTITION BY peer ORDER BY made,rowid)
      ) SELECT peer,MIN(MIN(made)+?,MIN(CASE WHEN following IS NULL OR (following-made>pause AND linked IS NULL) THEN made+pause END)) AS due
      FROM pending GROUP BY peer ORDER BY due,MIN(position) LIMIT 1`,
-    peer ?? null, peer ?? null, maxBurst,
+    ...pauses(n), peer ?? null, peer ?? null, n.chatBurstMs,
   );
 }
-export async function readBurst(peer: string, wokeAt = 0, sleepOnly=false) {
-  const rows = await all<ChatLine & {pause:number}>("SELECT *, "+pauseSQL+" AS pause FROM messages WHERE " + inboxWhere(sleepOnly) + " AND peer=? ORDER BY made,rowid LIMIT 25", peer);
+export async function readBurst(peer: string, wokeAt = 0, sleepOnly=false, overrides?:Overrides) {
+  const n=numbers.read(overrides ?? await currentOverrides());
+  const rows = await all<ChatLine & {pause:number}>("SELECT *, "+pauseSQL+" AS pause FROM messages WHERE " + inboxWhere(sleepOnly) + " AND peer=? ORDER BY made,rowid LIMIT 25", ...pauses(n),peer);
   const batch: ChatLine[] = [];
   let chars = 0;
   for (const row of rows) {
@@ -75,7 +83,7 @@ export async function readBurst(peer: string, wokeAt = 0, sleepOnly=false) {
     // A retried inference keeps its explicitly marked correction even across the usual pause.
     if (previous && (
       (row.made > wokeAt && row.made - previous.made > previous.pause && !row.batch_id) ||
-      batch.length === 24 || row.made - batch[0].made > maxBurst || chars + row.body.length > 12000
+      batch.length === 24 || row.made - batch[0].made > n.chatBurstMs || chars + row.body.length > 12000
     )) break;
     batch.push(row);
     chars += row.body.length;

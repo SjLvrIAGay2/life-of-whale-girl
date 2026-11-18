@@ -1,3 +1,6 @@
+import { numbers } from "../config/numbers.ts";
+import { friendMemoryErrors } from "../config/texts/errors.ts";
+import { friendReview, promiseDate, profileInstructions } from "../config/prompts/tasks";
 import { createHash } from "node:crypto";
 import { dayOf } from "../content/initial";
 import { all, memory, one, stmt, type ChatLine, type Memory } from "../db";
@@ -44,10 +47,8 @@ export async function visibleFriendCard(identity:string,offset=0,limit=64) {
     sources:evidence(m).flatMap(id=>{ const s=sourceMap.get(id);return s?[{side:s.side,body:s.body,made:s.made}]:[]; })}));
 }
 export function shanghaiDate(ms:number) {
-  return new Date(ms+8*3600000).toISOString().slice(0,16);
+  return new Date(ms+numbers.defaults.shanghaiOffsetMs).toISOString().slice(0,16);
 }
-export const profileInstructions =
-  "想记下好友自述时填 profile:[{topic,value,source,quote,category,when?,remove?}]。source 填原话序号，quote 逐字引用。自述用 stated，临时状态用 temporary 并摘录时间，多天印证的习惯用 habit。跳过玩笑。称呼用 topic=称呼，偏好有变沿用原主题，明确撤销用 remove=true。";
 
 export function profileWrites(scope: string, raw: unknown, lines: SourceLine[]) {
   const writes: D1PreparedStatement[] = [];
@@ -94,9 +95,9 @@ export async function reviewFriendBatch(now: number) {
   let size=0;
   const lines: SourceLine[]=[];
   for (const row of rows) { if (lines.length && size+row.body.length>11500) break; lines.push(row); size+=row.body.length; }
-  const answer = await think("你在睡中为一位好友整理新增来信。按来信日期更新卡片，没有新事实就返回空的 profile 列表。"+profileInstructions,
+  const answer = await think(friendReview+profileInstructions,
     {lines:lines.map((l,i)=>({source:i+1,date:shanghaiDate(l.made),text:l.body})),card:cardContext(await friendCard(scope,now)).facts},now,"activity",undefined,"friend_review");
-  if (!Array.isArray(answer?.profile)) throw Error("好友记忆整理格式错误");
+  if (!Array.isArray(answer?.profile)) throw Error(friendMemoryErrors.invalidReview);
   return [...profileWrites(scope,answer.profile,lines),
     stmt("UPDATE messages SET reviewed=1 WHERE id IN ("+lines.map(()=>"?").join(",")+")",...lines.map(l=>l.id))];
 }
@@ -113,7 +114,7 @@ export async function reviewLegacyPromise(now:number) {
   const original=new Set<string>(JSON.parse(p.evidence));
   let when:string|null=null, due:number|null=null;
   if(lines.some(l=>l.side==="out" && original.has("chat-out-"+l.id))) {
-    const answer=await think("核对约定的时间。从这段对话找出约定何时履行，返回 {source:行号,when:时间原话,dueLocal?:上海时间YYYY-MM-DDTHH:mm}。没说定就返回 {when:null}。",{
+    const answer=await think(promiseDate,{
       promise:p.body,lines:lines.map((l,i)=>({source:i+1,side:l.side,date:shanghaiDate(l.made),text:l.body.slice(0,900)})),
     },now);
     const line=lines[Number(answer.source)-1], phrase=text(answer.when,120);
@@ -153,7 +154,7 @@ export function promiseDue(phrase: string, base: number, proposed?: unknown): nu
   if (relative && !dayWithHour)
     return base + amount * ({分钟:60000, 小时:3600000, 天:86400000}[relative[3]] ?? 0);
   const midnight=Date.parse(dayOf(base)+"T00:00:00+08:00");
-  const date=new Date(midnight+8*3600000);
+  const date=new Date(midnight+numbers.defaults.shanghaiOffsetMs);
   const weekday=(date.getUTCDay()+6)%7;
   const week=phrase.match(/(下下|下|本|这)?(?:周|星期|礼拜)([一二三四五六日天])/);
   const iso=phrase.match(/(\d{4})[-年](\d{1,2})[-月](\d{1,2})(?:日|号)?/);
@@ -162,7 +163,7 @@ export function promiseDue(phrase: string, base: number, proposed?: unknown): nu
     const target=Date.UTC(+iso[1],+iso[2]-1,+iso[3]);
     const check=new Date(target);
     if(check.getUTCFullYear()!==+iso[1] || check.getUTCMonth()!==+iso[2]-1 || check.getUTCDate()!==+iso[3]) return null;
-    day=target-8*3600000;
+    day=target-numbers.defaults.shanghaiOffsetMs;
   } else if (week) {
     const dow="一二三四五六日".indexOf(week[2].replace("天","日"));
     const offset = week[1]==="下下"?14:week[1]==="下"?7:!week[1]&&dow<weekday?7:0;
@@ -177,7 +178,7 @@ export function promiseDue(phrase: string, base: number, proposed?: unknown): nu
     const year=date.getUTCFullYear()+(month<date.getUTCMonth() || (month===date.getUTCMonth() && d<date.getUTCDate())?1:0);
     const target=new Date(Date.UTC(year,month,d));
     if(target.getUTCMonth()!==month || target.getUTCDate()!==d) return null;
-    day=target.getTime()-8*3600000;
+    day=target.getTime()-numbers.defaults.shanghaiOffsetMs;
   }
   if(day===undefined && /周末/.test(phrase)) day=midnight+(/下周末/.test(phrase)?12-weekday:Math.max(0,5-weekday))*86400000;
   if(day===undefined && /月|节|假期|工作日/.test(phrase) && typeof proposed==="string" &&

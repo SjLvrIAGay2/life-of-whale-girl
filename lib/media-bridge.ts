@@ -1,3 +1,7 @@
+import { mediaBridgeErrors } from "../config/texts/errors.ts";
+import type { Overrides } from "../config/options.ts";
+import { numbers } from "../config/numbers.ts";
+import { readingOverrides } from "../config/reading";
 import { all, one, stmt } from "../db";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -13,21 +17,21 @@ const request = z.object({
     "subtitles",
     "frames",
   ]),
-  query: z.string().max(70).optional(),
+  query: z.string().max(numbers.defaults.mediaQueryChars).optional(),
   id: z.string().max(80).optional(),
   root: z
     .string()
     .regex(/^\d{1,20}$/)
     .optional(),
-  page: z.number().int().min(1).max(10000).optional(),
-  offset:z.number().int().min(0).max(50000).optional(),
+  page: z.number().int().min(1).max(numbers.defaults.mediaPageMax).optional(),
+  offset:z.number().int().min(0).max(numbers.defaults.mediaOffsetMax).optional(),
 });
 const videoURL = z
   .string()
   .regex(/^https:\/\/www\.bilibili\.com\/(?:video\/BV[\da-zA-Z]{10}|bangumi\/play\/ep[1-9]\d{0,15})$/);
 const result = z.object({
   status: z.string().regex(/^[a-z0-9_-]{1,45}$/),
-  resolved:z.object({id:z.string().regex(/^(?:BV[\da-zA-Z]{10}|ep[1-9]\d{0,15})$/),page:z.number().int().min(1).max(10000).optional()}).optional(),
+  resolved:z.object({id:z.string().regex(/^(?:BV[\da-zA-Z]{10}|ep[1-9]\d{0,15})$/),page:z.number().int().min(1).max(numbers.defaults.mediaPageMax).optional()}).optional(),
   filteredCount:z.number().int().nonnegative().optional(),
   nextPage:z.number().int().positive().optional(),
   nextOffset: z.number().int().nonnegative().optional(),
@@ -81,6 +85,7 @@ const result = z.object({
 type Job = {
   created: number;
   request: ReadRequest;
+  overrides?: Overrides;
   observation?: Observation;
   done?: number;
 };
@@ -98,11 +103,12 @@ export async function readWithDesk(
     )
   )
     return direct;
+  const overrides=readingOverrides(network.overrides);
   const input = request.parse(query),
     id =
       prefix +
       createHash("sha256")
-        .update(JSON.stringify(input))
+        .update(JSON.stringify(overrides ? {input,overrides} : input))
         .digest("hex")
         .slice(0, 32),
     now = Date.now();
@@ -113,7 +119,7 @@ export async function readWithDesk(
   let old: Job | undefined = row ? JSON.parse(row.value) : undefined;
   if (old?.observation && now - (old.done ?? 0) < 15 * 60000)
     return old.observation;
-  const data: Job = { created: now, request: input };
+  const data: Job = { created: now, request: input, overrides };
   await stmt(
     "INSERT INTO channel_state VALUES(?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value WHERE json_extract(channel_state.value,'$.created')<?",
     id,
@@ -156,6 +162,7 @@ export async function nextReads() {
     id: j.id,
     created: JSON.parse(j.value).created,
     request: JSON.parse(j.value).request,
+    overrides: readingOverrides(JSON.parse(j.value).overrides),
   }));
 }
 export async function finishRead(id: unknown, created: unknown, raw: unknown) {
@@ -164,7 +171,7 @@ export async function finishRead(id: unknown, created: unknown, raw: unknown) {
     !/^desk-read\/[0-9a-f]{32}$/.test(id) ||
     typeof created !== "number"
   )
-    throw Error("读取编号无效");
+    throw Error(mediaBridgeErrors.invalidId);
   const row = await one<{ value: string }>(
     "SELECT value FROM channel_state WHERE id=?",
     id,

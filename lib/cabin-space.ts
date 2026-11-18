@@ -1,3 +1,4 @@
+import { cabinSpaceErrors } from "../config/texts/errors.ts";
 import type { Angle, Destination, Item, Location, PublicItem, Region } from "./cabin-model";
 import { boxVolume, checkDimensions, volume } from "./cabin-model";
 import type { RoomItem } from "../content/initial";
@@ -35,7 +36,7 @@ export class Space {
       seen = new Set([item.id]);
     while (item.at) {
       item = this.get(item.at.parent);
-      if (seen.has(item.id)) throw Error("不能把对象放进自己或其后代");
+      if (seen.has(item.id)) throw Error(cabinSpaceErrors.cycle);
       seen.add(item.id);
       chain.push(item);
     }
@@ -96,11 +97,11 @@ export class Space {
   private fit(item: Item, parent: Item, dest: Destination, region: Region): Location {
     const base = { parent: parent.id, region: dest.region };
     if (region.relation === "installed") {
-      if (!item.props.installMB) throw Error("安装位只接受有安装大小的软件");
-      if (dest.x || dest.y || dest.rotation) throw Error("软件安装位按 MB 分配，没有网格坐标");
+      if (!item.props.installMB) throw Error(cabinSpaceErrors.softwareOnly);
+      if (dest.x || dest.y || dest.rotation) throw Error(cabinSpaceErrors.noInstallCoordinates);
       return { ...base, x: 0, y: 0, rotation: 0 };
     }
-    if (item.props.installMB) throw Error("软件需要安装在设备的软件安装位");
+    if (item.props.installMB) throw Error(cabinSpaceErrors.installInDevice);
     const [rw, rd, rh] = region.size;
     const angles = dest.rotation === undefined ? item.props.rotations : [dest.rotation];
     const occupied = this.children(parent.id, dest.region)
@@ -140,9 +141,9 @@ export class Space {
     throw Error(parent.props.name + "：" + reason);
   }
   place(item: Item, dest: Destination, searchOnly = false) {
-    if (item.id === "cabin") throw Error("小屋地面是坐标原点");
+    if (item.id === "cabin") throw Error(cabinSpaceErrors.fixedOrigin);
     const parent = this.get(dest.parent);
-    if (this.path(parent).includes(item)) throw Error("不能把对象放进自己或其后代");
+    if (this.path(parent).includes(item)) throw Error(cabinSpaceErrors.cycle);
     this.accessible(item);
     this.accessible(parent);
     const at = this.fit(item, parent, dest, this.openRegion(parent, dest.region));

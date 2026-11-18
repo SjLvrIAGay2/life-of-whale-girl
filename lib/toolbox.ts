@@ -1,3 +1,5 @@
+import { toolboxErrors } from "../config/texts/errors.ts";
+import { numbers } from "../config/numbers.ts";
 import { z } from "zod";
 // Recipes are small, executable programs over named, bounded operations. There is no host shell or raw network operation.
 export const toolName = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,39}$/);
@@ -5,9 +7,9 @@ export const step = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("read"),
     source: z.enum(["heybox", "bili"]),
-    query: z.string().max(70).optional(),
+    query: z.string().max(numbers.defaults.mediaQueryChars).optional(),
   }),
-  z.object({ op: z.literal("take"), count: z.number().int().min(1).max(8) }),
+  z.object({ op: z.literal("take"), count: z.number().int().min(1).max(numbers.defaults.recipeItems) }),
   z.object({
     op: z.literal("join"),
     separator: z.string().max(8).default("、"),
@@ -17,7 +19,7 @@ export const step = z.discriminatedUnion("op", [
 ]);
 export const recipe = z.object({
   description: z.string().min(2).max(180),
-  steps: z.array(step).min(1).max(6),
+  steps: z.array(step).min(1).max(numbers.defaults.recipeSteps),
 });
 export type Recipe = z.infer<typeof recipe>;
 const stateKey = z.string().regex(/^[a-z][a-z0-9_]{0,47}$/).refine(k=>!Object.hasOwn(Object.prototype,k));
@@ -26,7 +28,7 @@ const objectStep = z.union([step,
   z.object({op:z.literal("state.append"),key:stateKey,text:z.string().min(1).max(300)}).strict(),
   z.object({op:z.literal("replay")}).strict(),
 ]);
-export const objectRecipe = recipe.extend({steps:z.array(objectStep).min(1).max(6)});
+export const objectRecipe = recipe.extend({steps:z.array(objectStep).min(1).max(numbers.defaults.recipeSteps)});
 type Parts = {
   read: (
     source: "bili" | "heybox",
@@ -46,18 +48,18 @@ export async function runObjectRecipe(raw:unknown,input:string,parts:ObjectParts
   return evaluate(objectRecipe.parse(raw),input,parts,parts);
 }
 async function evaluate(tool:z.infer<typeof objectRecipe>, input:string, parts:Parts, object?:ObjectParts) {
-  let output = [input.slice(0, 400)];
+  let output = [input.slice(0, numbers.defaults.recipeInputChars)];
   let drawings = 0,
     reads = 0;
   const substitute = (s: string) =>
     s
-      .replaceAll("$input", input.slice(0, 400))
-      .replaceAll("$result", output.join(" ").slice(0, 500))
-      .slice(0, 800);
+      .replaceAll("$input", input.slice(0, numbers.defaults.recipeInputChars))
+      .replaceAll("$result", output.join(" ").slice(0, numbers.defaults.recipeResultChars))
+      .slice(0, numbers.defaults.recipeCaptionChars);
   for (const step of tool.steps) {
     switch (step.op) {
       case "read":
-        if (++reads > 2) throw Error("每个工具最多读取两次");
+        if (++reads > numbers.defaults.recipeReads) throw Error(toolboxErrors.readLimit);
         output = await parts.read(
           step.source,
           step.query ? substitute(step.query) : undefined,
@@ -67,13 +69,13 @@ async function evaluate(tool:z.infer<typeof objectRecipe>, input:string, parts:P
         output = output.slice(0, step.count);
         break;
       case "join":
-        output = [output.join(step.separator).slice(0, 800)];
+        output = [output.join(step.separator).slice(0, numbers.defaults.recipeCaptionChars)];
         break;
       case "caption":
         output = [substitute(step.text)];
         break;
       case "draw":
-        if (++drawings > 1) throw Error("每个工具最多画一幅");
+        if (++drawings > numbers.defaults.recipeDrawings) throw Error(toolboxErrors.drawingLimit);
         output = [await parts.draw(substitute(step.idea))];
         break;
       case "state.get": output=object!.get(step.key); break;

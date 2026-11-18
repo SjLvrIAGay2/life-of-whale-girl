@@ -1,3 +1,4 @@
+import { qqVoiceErrors } from "../config/texts/errors.ts";
 import { env } from "cloudflare:workers";
 import { limited } from "./security";
 import { maxVoiceBytes, transcribe } from "./speech";
@@ -10,11 +11,11 @@ export async function downloadQQ(link: string, limit: number) {
   const url = new URL(link.startsWith("//") ? "https:" + link : link);
   if (!["https:", "http:"].includes(url.protocol) || url.port || url.username || url.password ||
       !/(?:^|\.)(?:qq\.com(?:\.cn)?|qqbot\.cn|qpic\.cn|gtimg\.cn|gtimg\.com)$/i.test(url.hostname))
-    throw Error("无效的 QQ 附件地址");
+    throw Error(qqVoiceErrors.invalidUrl);
   url.protocol = "https:";
   const r = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(15000) });
-  if (!r.ok || !r.body) throw Error("QQ 语音下载失败");
-  if (Number(r.headers.get("content-length")) > limit) throw Error("QQ 附件过大");
+  if (!r.ok || !r.body) throw Error(qqVoiceErrors.download);
+  if (Number(r.headers.get("content-length")) > limit) throw Error(qqVoiceErrors.size);
   return limited(r.body, limit);
 }
 export async function hearQQVoice(a: QQAudio) {
