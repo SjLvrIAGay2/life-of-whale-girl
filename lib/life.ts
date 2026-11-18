@@ -56,7 +56,7 @@ import { artForConversation, attachReading, browseOwnWorks, deskWorks, editWork,
 import { cabinAction, cabinContext } from "./cabin";
 import { arrangeFurniture, initializeCabin } from "./cabin-store";
 import { gameKinds } from "./games";
-import { endActivity, publicActivities, leisureContext, play, readExperience, record } from "./activities";
+import { endActivity, publicActivities, leisureContext, play, readExperience, record, recordObjectReading } from "./activities";
 import { editSite, studioSchema } from "./studio";
 import { publicHome } from "../db";
 import { activityTrace, trace, workInputTrace } from "./telemetry";
@@ -64,8 +64,8 @@ import { beginSleep, isClockUpgrade, setAlarm, sleepContext, upgradeSleep, wakeB
 import { chatOutcome, finishAction, readingBookmark, receiptForModel, recoverLastAction, savedFailure, type Outcome } from "./action-result";
 import { duePersonalPlans, planReading, readingCompletion, readingGoals, type ReadingTarget } from "./personal-plans";
 import { browseActivityArchive } from "./action-archive";
-import { personalReading } from "./reading-progress";
-import { discoveryDesk } from "./discovery";
+import { personalReading, resumeRead } from "./reading-progress";
+import { changeTitles, discoveryDesk, type DeskTitle } from "./discovery";
 import { upgradeExperience } from "./experience-migration";
 import { readingOutcome, sourceNames } from "../content/activity";
 import { currentRest, restContext } from "./rest";
@@ -111,7 +111,7 @@ const actionSchema = z.object({
   action: z.enum([
     "config", "help",
     "rest",
-    "read",
+    "read","change_titles",
     "draw",
     "room","object",
     "sleep","alarm","get_up",
@@ -538,6 +538,7 @@ async function execute(
   defs: Setting[],
   a: z.infer<typeof actionSchema>,
   contacts: ChatContact[],
+  titles: DeskTitle[],
 ) {
   const s = t.state;
   const n = numbers.read(s.config), copy=texts.read(s.config);
@@ -547,7 +548,7 @@ async function execute(
   const ink =
     defs.find((v) => v.name === "style")?.value || copy.drawingStyle;
   const startName = s.name;
-  const interactive=["config","help","play","read","site","archive","object"].includes(a.action) || (a.action==="work" && (a.work as {action?:string})?.action==="browse");
+  const interactive=["config","help","play","read","change_titles","site","archive","object"].includes(a.action) || (a.action==="work" && (a.work as {action?:string})?.action==="browse");
   const quick=interactive && a.minutes===undefined && (s.quickSteps??0)<n.quickSteps;
   s.quickSteps=quick ? (s.quickSteps??0)+1 : 0;
   s.nextAt=t.now+(quick ? n.quickDelayMs : (a.minutes??(a.action==="rest"?n.restMinutes:interactive?n.interactiveMinutes:n.idleMinutes))*60000);
@@ -565,7 +566,7 @@ async function execute(
   }
   let outcome: Outcome;
   let readResult:Observation|undefined;
-  let receiptScope=["config","help","object","archive","site","revise","rollback","request_mcp","use_mcp","use_tool","alarm","chat"].includes(a.action) ? privateScope : scope;
+  let receiptScope=["config","help","change_titles","object","archive","site","revise","rollback","request_mcp","use_mcp","use_tool","alarm","chat"].includes(a.action) ? privateScope : scope;
   let progress:{id:string;complete:boolean}|undefined;
   let planKind:string=a.action;
   let planScope=scope;
@@ -623,7 +624,11 @@ async function execute(
       const run=await cabinAction(s,a.object,{
         read:async query=>{
           const result=await perceive(hostTurn,query);
-          if(result.status==="ok") hostTurn.writes.push(readingBookmark(query,result,t.now));
+          if(result.status==="ok") {
+            const request={...query,...result.resolved};
+            recordObjectReading(hostTurn,request,result);
+            hostTurn.writes.push(readingBookmark(request,result,t.now));
+          }
           return result;
         },
         draw:async idea=>(await queuePainting(hostTurn,privateScope,idea,ink)).id,
@@ -683,9 +688,22 @@ async function execute(
       outcome = chatOutcome(response.status,response.id);
       break;
     }
+    case "change_titles": {
+      if (!a.target) throw Error(lifeErrors.titleSource);
+      const changed=await changeTitles(a.target,titles,t.writes,s.config);
+      outcome={status:changed?"done":"skipped",summary:changed?copy.changedTitles:copy.noTitlesToChange};
+      break;
+    }
     case "read":
       if (!a.media) throw Error(lifeErrors.mediaMissing);
       {
+        // Plans and work attachments request their own evidence, including a fresh read of an old passage.
+        const request=a.planId || a.work ? a.media : await resumeRead(a.media);
+        if (!request) {
+          outcome={status:"skipped",summary:copy.noReadingContinuation};
+          break;
+        }
+        a.media=request;
         const result = readResult = await perceive(t, a.media);
         if(result.resolved) a.media={...a.media,...result.resolved};
         if(isBiliAccountRead(a.media)) receiptScope=privateScope;
@@ -1552,7 +1570,7 @@ export async function tick(
         one<{at:number}>("SELECT json_extract(value,'$.at') AS at FROM channel_state WHERE id='activity-input/last-action'"),
       ]);
       const [desk, works, cabin]=await Promise.all([
-        discoveryDesk(now,leisure.saves,state.config),deskWorks(previous?.at??state.lastAction?.made??now,state.focusWork),cabinContext(visibleState),
+        discoveryDesk(now,leisure.saves,state.config,state.interests),deskWorks(previous?.at??state.lastAction?.made??now,state.focusWork),cabinContext(visibleState),
       ]);
       const archive=["work","archive"].includes(state.lastAction?.action??"") && state.lastResult && typeof state.lastResult==="object" && "items" in state.lastResult ? state.lastResult : undefined;
       const help = state.lastAction?.action === "help" ? state.lastResult : undefined;
@@ -1561,8 +1579,13 @@ export async function tick(
         ? {usage:activityHelp.work,...await workEvidenceChoices(state.lastAction.ref ?? workRequest?.id,workRequest?.action)} : undefined;
       const config=state.lastAction?.action==="config" ? state.lastResult : undefined;
       if(config || archive || help || state.lastAction?.action==="object") leisure.latest=undefined;
+      const resume=readingProgress.flatMap(item=>{
+        const followingQuestion=state.question?.source===item.source && state.question.id===item.id;
+        return item.paths.filter(media=>followingQuestion || !item.hasContent || (media.offset??0)>0 || (media.action==="comments" && (media.page??1)>1))
+          .map(media=>({title:item.title,action:"read",media}));
+      });
       const decision = {
-        self: persona(defs), sleep, rest, readingProgress,desk,works,cabin,help,archive,config,duePlans,
+        self: persona(defs), sleep, rest, desk:{titles:desk.titles,resume,change:desk.change,games:desk.games},readingProgress,works,cabin,help,archive,config,duePlans,
         workHelp,
         reflection:state.lastAction?.action==="reflect" && state.lastAction.status==="failed"
           ? {usage:activityHelp.reflect,activities:leisure.recent} : undefined,
@@ -1601,7 +1624,7 @@ export async function tick(
       try {
         if(writingHabit(state,now).invited) state.journalHabit={everyDays:state.journalHabit?.everyDays??numbers.read(state.config).fallbackJournalDays,
           nextDay:dayOf(now+(state.journalHabit?.everyDays||numbers.read(state.config).fallbackJournalDays)*24*hour)};
-        await execute(t, defs, actionSchema.parse(result?.action==="sleep"?{...result,minutes:undefined}:result), contacts);
+        await execute(t, defs, actionSchema.parse(result?.action==="sleep"?{...result,minutes:undefined}:result), contacts, desk.titles);
       } catch (error) {
         t.writes.length = mark;
         t.newMem.length = count;

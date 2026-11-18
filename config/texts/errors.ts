@@ -118,6 +118,7 @@ export const lifeErrors = {
   journalChoice: "请给出写作习惯或这次选择",
   contactMissing: "没有选中可联系的好友",
   mediaMissing: "未选择媒体",
+  titleSource: "请选择要换推荐的来源",
   emptyName: "站名为空",
   alarmCommand: "缺少闹钟操作",
   restrictedSetting: "修改限于角色设定和工具箱",

@@ -21,7 +21,13 @@ type Stage = {
 export function unreadTitles(sourceName:string, items:{id:string;title:string}[]) {
   return all<{id:string;title:string}>(`SELECT json_extract(c.value,'$.id') AS id,json_extract(c.value,'$.title') AS title FROM json_each(?) c
     WHERE NOT EXISTS(SELECT 1 FROM activities WHERE ${focused} AND ${source}=? AND ${target}=json_extract(c.value,'$.id')
-      AND coalesce(json_extract(detail,'$.detail.status'),'ok')='ok') ORDER BY c.key`,JSON.stringify(items),sourceName);
+      AND coalesce(json_extract(detail,'$.detail.status'),'ok')='ok')
+    AND json_extract(c.value,'$.id') NOT IN (SELECT json_extract(b.value,'$.id') FROM channel_state b
+      WHERE b.id GLOB 'reading-progress/*' AND json_extract(b.value,'$.source')=? AND json_type(b.value,'$.id')='text'
+      AND (json_extract(b.value,'$.status')='ok' OR (json_type(b.value,'$.status') IS NULL AND
+        (json_extract(b.value,'$.action')='open' OR json_extract(b.value,'$.level') IN ('subtitles','storyboard_viewed'))))
+      AND json_extract(b.value,'$.action') IN ('open','subtitles','frames','comments','image'))
+    ORDER BY c.key`,JSON.stringify(items),sourceName,sourceName);
 }
 type Visit = {
   made: number; detail: string; attempts: number; identical: number; newest: number; change:string;
@@ -30,9 +36,10 @@ type Visit = {
 function position(read: Reading) {
   if (read.level==="article") return {fromOffset:read.offset??0,nextOffset:read.nextOffset,atEnd:read.atEnd};
   if (read.level === "subtitles") {
-    const times = [...(read.items[0]?.body ?? "").matchAll(/^(\d+)s /gm)];
+    const body=read.items[0]?.body??"";
+    const times = [...body.matchAll(/^(\d+)s /gm)];
     // The old reader cut the last line at 3400 characters. Keep that line available on resumption.
-    const complete = times.length - Number(read.items[0]?.body.length === 3400);
+    const complete = times.length - Number(body.length === 3400);
     return { fromOffset:read.offset ?? 0, nextOffset:read.nextOffset ?? (complete>0 ? (read.offset??0)+complete : undefined),
       lastCueSeconds:times.length ? Number(times.at(-1)![1]) : undefined, atEnd:read.atEnd };
   }
@@ -41,28 +48,71 @@ function position(read: Reading) {
   if (read.comments?.length) return { comments:read.comments.length, lastComment:read.comments.at(-1)?.id };
 }
 
-function readingPaths(item:Target, stages:Stage[], part:number):ReadRequest[] {
-  const actions:ReadRequest[]=[];
-  if(item.source==="bili") {
-    for(const action of ["frames","subtitles"] as const) {
-      const stage=stages.find(s=>s.action===action && (s.page??1)===part);
-      const pos=stage?.lastRead?.position;
-      if (pos?.atEnd || ["no_frames","no_subtitles","end_of_frames","end_of_subtitles","part_not_found","needs_login"].includes(stage?.lastAttempt.status??"")) continue;
-      actions.push({...item,action,page:part,offset:pos?.nextOffset??0});
+// Displayed excerpts follow the latest visit. Continuations follow the furthest successful
+// position, even after a deliberate reread or after the excerpt has fallen out of the recent stages.
+async function readingPaths(item:Target, requestedPart?:number, retry=false) {
+  const rows=await all<{reading:string; part:number; latest:number; furthest:number; endOffset:number|null}>(`WITH visits AS (
+    SELECT rowid AS seq,made,json_extract(detail,'$.detail') AS reading,json_extract(detail,'$.detail.action') AS op,
+      coalesce(json_extract(detail,'$.detail.page'),1) AS page,coalesce(json_extract(detail,'$.detail.offset'),0) AS offset,
+      coalesce(json_extract(detail,'$.detail.status'),'ok') AS status
+    FROM activities WHERE ${focused} AND ${source}=? AND ${target}=? AND json_extract(detail,'$.detail.root') IS NULL
+  ), selected AS (
+    SELECT coalesce(?,(SELECT page FROM visits WHERE op IN ('open','frames','subtitles') ORDER BY made DESC,seq DESC LIMIT 1),1) AS part
+  ), ranked AS (
+    SELECT reading,part,status,
+      min(CASE WHEN status IN ('end_of_article','end_of_frames','end_of_subtitles') THEN offset END) OVER(PARTITION BY op) AS endOffset,
+      row_number() OVER(PARTITION BY op ORDER BY made DESC,seq DESC) AS latest,
+      row_number() OVER(PARTITION BY op ORDER BY (status='ok') DESC,
+        CASE WHEN op='comments' THEN page ELSE coalesce(json_extract(reading,'$.nextOffset'),offset) END DESC,
+        coalesce(json_extract(reading,'$.atEnd'),0) DESC,made DESC,seq DESC) AS furthest
+    FROM visits,selected WHERE op='comments' OR page=part OR (?='heybox' AND op='open')
+  ) SELECT * FROM ranked WHERE latest=1 OR (furthest=1 AND status='ok')`,item.source,item.id,requestedPart??null,item.source);
+  const attempts=new Map<string,Reading>(), progress=new Map<string,Reading>();
+  const ends=new Map<string,number>();
+  for (const row of rows) {
+    const read:Reading=JSON.parse(row.reading);
+    if (row.latest===1) attempts.set(read.action,read);
+    if (row.furthest===1 && (!read.status || read.status==="ok")) progress.set(read.action,read);
+    if (row.endOffset!==null) ends.set(read.action,row.endOffset);
+  }
+  const part=rows[0]?.part??requestedPart??1;
+  const paths:ReadRequest[]=[];
+  const operations:ReadRequest["action"][]=item.source==="bili" ? ["frames","subtitles","comments"] : ["open","comments"];
+  for (const action of operations) {
+    const best=progress.get(action), last=attempts.get(action);
+    if (best?.atEnd) continue;
+    const path:ReadRequest={...item,action};
+    if (action==="comments") {
+      path.page=best ? best.nextPage??(best.page??1)+1 : 1;
+      if (last?.nextPage && last.page===path.page) path.page=last.nextPage;
+      if (path.page>numbers.defaults.mediaPageMax) continue;
+    } else {
+      if (item.source==="bili") path.page=part;
+      const next=best ? position(best)?.nextOffset : 0;
+      if (next==null || (best && next<=(best.offset??0))) continue;
+      const end=ends.get(action);
+      if (end!==undefined && next>=end && (!best || (best.offset??0)<end)) continue;
+      path.offset=next;
     }
+    // Keep a failed position available for an intentional retry, without offering it again on every turn.
+    if (!retry && last?.status && last.status!=="ok" && (["no_frames","no_subtitles","part_not_found","needs_login"].includes(last.status) ||
+      ((path.page??1)===(last.page??1) && (path.offset??0)===(last.offset??0)))) continue;
+    paths.push(path);
   }
-  const discussion=stages.find(s=>s.action==="comments" && !s.root);
-  if (!discussion) actions.push({...item,action:"comments",page:1});
-  else {
-    const next=discussion.lastAttempt.nextPage ?? (discussion.lastAttempt.status==="ok" && discussion.lastAttempt.atEnd!==true ? (discussion.page??1)+1 : undefined);
-    if(next && next<=numbers.defaults.mediaPageMax) actions.push({...item,action:"comments",page:next});
-  }
-  const article=stages.find(s=>s.action==="open")?.lastRead?.position;
-  if (item.source==="heybox" && article?.nextOffset && !article.atEnd) actions.push({...item,action:"open",offset:article.nextOffset});
-  return actions;
+  const hasContent=[...progress.values()].some(read=>["article","subtitles","storyboard_viewed","filtered_comments","discussion"].includes(read.level));
+  return {paths,hasContent};
 }
 
-async function materialProgress(item: Target, n:typeof numbers.defaults, part?:number) {
+export async function resumeRead(request:ReadRequest):Promise<ReadRequest|undefined> {
+  const paged=request.action==="comments";
+  const segmented=request.source==="bili" ? request.action==="frames" || request.action==="subtitles" : request.action==="open";
+  if (!request.id || request.root || (!paged && !segmented) || (paged ? request.page!==undefined : request.offset!==undefined)) return request;
+  const {paths}=await readingPaths({source:request.source,id:request.id},request.page,true);
+  const next=paths.find(path=>path.action===request.action);
+  return next && {...request,...next};
+}
+
+async function materialProgress(item: Target, n:typeof numbers.defaults, offerPaths:boolean, part?:number) {
   const rows = await all<Visit>(`WITH visits AS (
     SELECT rowid AS seq,made,detail,json_extract(detail,'$.detail.action') AS op,
       coalesce(json_extract(detail,'$.detail.page'),1) AS page,coalesce(json_extract(detail,'$.detail.root'),'') AS thread,
@@ -96,18 +146,19 @@ async function materialProgress(item: Target, n:typeof numbers.defaults, part?:n
     }
   }
   const seen=[...stages.values()];
-  const page=part??seen.find(s=>["open","subtitles","frames"].includes(s.action))?.page??1;
-  return {...item,title,stages:seen,paths:seen.length?readingPaths(item,seen,page):[]};
+  const continuation=offerPaths && seen.length ? await readingPaths(item,part) : {paths:[],hasContent:undefined};
+  return {...item,title,stages:seen,...continuation};
 }
 
 export async function personalReading(question?:{source?:Target["source"];id?:string;page?:number}, overrides?:Overrides) {
   const n=numbers.read(overrides);
   const targets = await all<Target>(`SELECT ${source} AS source,${target} AS id FROM activities
     WHERE ${focused} AND ${source} IN ('bili','heybox') AND ${target} IS NOT NULL GROUP BY ${source},${target} ORDER BY max(rowid) DESC LIMIT ?`,n.readingMaterials);
-  if ((question?.source==="bili" || question?.source==="heybox") && question.id) {
-    const focus={source:question.source,id:question.id};
-    const rest=targets.filter(t=>t.source!==focus.source || t.id!==focus.id);
-    return Promise.all([materialProgress(focus,n,question.page),...rest.slice(0,n.readingMaterials-1).map(t=>materialProgress(t,n))]);
-  }
-  return Promise.all(targets.map(t=>materialProgress(t,n)));
+  const focus=(question?.source==="bili" || question?.source==="heybox") && question.id ? {source:question.source,id:question.id} : undefined;
+  const isFocus=(item:Target)=>focus?.source===item.source && focus.id===item.id;
+  const materials=focus ? [focus,...targets.filter(item=>!isFocus(item))].slice(0,n.readingMaterials) : targets;
+  return Promise.all(materials.map(item=>{
+    const pinned=isFocus(item);
+    return materialProgress(item,n,pinned || item===targets[0],pinned?question?.page:undefined);
+  }));
 }
