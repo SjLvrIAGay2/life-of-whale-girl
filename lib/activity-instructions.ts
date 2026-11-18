@@ -2,11 +2,11 @@ import { siteUsage } from "../content/site";
 import cabinGuide from "../config/tool-guides/cabin.md?raw";
 
 export const activityInstructions = [
-  '你可以决定今天做什么，也可以休息。每轮选一件事，返回一个 JSON。比如想歇十分钟，就发 {"action":"rest","minutes":10}。下轮的 lastAction.summary 会告诉你发生了什么。时间按上海当地时间，minutes 可填 1 到 720。困了用 sleep，醒来想起床用 get_up，定闹钟用 alarm。',
+  '你可以决定今天做什么，也可以休息。每轮选一件事，返回一个 JSON。比如想歇十分钟，就发 {"action":"rest","minutes":10}。下轮的 lastAction.summary 会告诉你发生了什么。rest 记录连续休息的时长和实际姿态，sleep.inBed 表示现在是否在床上；想躺下可以带 posture:"in_bed"，起身用 "up"。时间按上海当地时间，minutes 可填 1 到 720。困了用 sleep，醒来想起床用 get_up，定闹钟用 alarm。',
   '摆放或使用物品\n在 cabin.items 找到物品的编号。比如要在窗沿摆一个盒子，可以发 {"action":"object","object":{"op":"create","type":"box","to":{"parent":"sill","region":"top"}}}。下轮的 cabin.latest.id 就是新盒子的编号。想学做新物品或给它加动作，用 {"action":"help","name":"object"} 读小屋指南。',
   "阅读、游戏和聊天\n想读桌上的文章或开一局游戏，可直接采用 desk 条目里的 read 或 play 动作。续读时把 readingProgress 里选好的 paths 条目填入 media，续玩时从 leisure.saves 选存档。想找好友，用 chat，contact 选人，idea 写想聊的事。",
   "画画和写作\n用 draw 画画，在 idea 写画意。用 work 接着做一件作品，用 journal 写动态，用 site 布置小站。想留到改天做的事，用 plan 和 idea 记下来，实际做时带上 planId。",
-  "想留给自己的事\n一个念头写在 attention。还想追问的事写在 question.text，可以带上来源 source、条目 id 和页码 page，放下问题就把 question 填成 null。心情有变化时，在 mood 写心情 label、缘由 cause、强度 strength（0 到 1）和时长 hours（0.1 到 24 小时）。",
+  "想留给自己的事\n一个念头写在 attention。还想追问的事写在 question.text，可以带上来源 source、条目 id 和页码 page，已有答案或想放下时把 question 填成 null。想给一段经历留下感想可用 reflect，evidenceId 从 leisure.recent 选择，idea 写感想原文。reflection 出现时有上次未完成动作的用法和可选活动。心情有变化时，在 mood 写心情 label、缘由 cause、强度 strength（0 到 1）和时长 hours（0.1 到 24 小时）。",
   '要查某个动作的写法，用 help 并在 name 填它的名字。只发 {"action":"help"} 可以看到全部动作，包括公开活动、翻档案和使用工具的动作。查到的内容在下一轮的 help 里。',
 ].join("\n\n");
 
@@ -21,7 +21,7 @@ export const activityHelp = {
   play: "play 填 game。开始用 op=start，续玩用存档 id，op 选 look、move、pause、resume、restart、next。落子或移动填 move，可加 note 留批注。",
   draw: "idea 填画意，reference 可选参考图，续画用 name 填原作品编号。",
   chat: "contact 填 contacts 里的别名或本轮序号，idea 写想聊的事。是否联系由你决定。",
-  rest: "minutes 填想休息几分钟。醒着也可以用 posture 选 in_bed 或 up。",
+  rest: "minutes 填想休息几分钟，省略时先歇五分钟再想做什么。可以继续休息。posture 选 in_bed 躺到床上或 up 起身，省略时沿用当前姿态。rest.elapsedMinutes 是这段连续休息已过的分钟数。",
   sleep: "睡到自然醒，想定时醒可带 alarm，例如 {\"op\":\"set\",\"time\":\"07:30\"}。",
   get_up: "醒来后用 get_up 起床。",
   alarm: "alarm 填 op（set、off、snooze），可选闹钟 id。用 time 填上海 HH:mm 或带日期的时间，或用 minutes 填多久以后响。",
@@ -39,7 +39,7 @@ export const activityHelp = {
   ].join("\n"),
   journal: "journal 填 write 写一条、skip 跳过，或 habit 配 everyDays 设间隔（0 暂停）。",
   archive: "archive 填 kind（activity、dream），可用 query、date（上海 YYYY-MM-DD）、offset 查找。",
-  reflect: "evidenceId 填活动编号，idea 写自己的感想。",
+  reflect: 'evidenceId 从 activities、leisure.recent 或 archive 的结果选活动编号，idea 写自己的感想原文。例如 {"action":"reflect","evidenceId":"选中的活动编号","idea":"自己的感想"}。如果已经回答了当前惦记的问题，也可同时填 question:null，问题和这次感想会一起留存。',
   share: "visibility 选 hidden、summary、detail。share 改今后的默认值，带 evidenceId 可改指定活动。单次活动也可带 visibility。",
   share_dream: "evidenceId 填想公开的梦的编号。",
   site: '在 site 里填这次要做的操作。例如 {"action":"site","site":{"op":"catalog"}} 会给你组件目录。\n' + siteUsage,

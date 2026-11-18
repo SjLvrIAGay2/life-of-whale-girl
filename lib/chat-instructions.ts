@@ -8,6 +8,7 @@ type ChatTurn = {
   friendCard: { promises: unknown[] };
   sharedMemories?: unknown[];
   toolResult?: unknown;
+  rest?: unknown;
 };
 
 export function chatInstructions(turn: ChatTurn) {
@@ -20,6 +21,8 @@ export function chatInstructions(turn: ChatTurn) {
   ];
   if (turn.unread.length)
     lines.push("谈到睡醒或晚回时，timing.receivedAt 是来信时间，readAt 是读到的时间。用 receivedMode 看来信时自己的状态，unknown 表示不清楚。用 sleep 看自己现在的状态。好友此刻是否醒着，以对方说的话为准。");
+  if (turn.rest)
+    lines.push("rest 是接话前那段休息的起点、已过时长和姿态。现在是否在床上看 sleep.inBed。");
   if (turn.toolResult)
     lines.push("这次已经读完。根据 toolResult 里实际读到的内容或失败原因答复好友。");
   else if (turn.unread.length)

@@ -23,7 +23,8 @@ export type Experience =
   | Reading
   | { kind: "game"; save: string; game: Game; op: GameCommand["op"]; input?: string }
   | { kind: "draw"; description:string; title?:string; art?:string }
-  | { kind: "rest" | "sleep" | "room"; description: string };
+  | { kind: "rest"; description: string; rest?: {since:number;posture:"in_bed"|"up";minutes:number;timing:"chosen"|"default"} }
+  | { kind: "sleep" | "room"; description: string };
 export type PublicActivity = {
   id: string;
   made: number;
@@ -32,7 +33,26 @@ export type PublicActivity = {
   kind: Experience["kind"];
   detail?: Experience;
   remark?: string;
+  restCount?: number;
 };
+
+// Group only the timeline presentation; individual activity URLs and evidence remain intact.
+export function groupRestActivities(rows: PublicActivity[]) {
+  const grouped: PublicActivity[] = [];
+  for (const row of rows) {
+    const newer = grouped.at(-1);
+    const newRest=newer?.detail?.kind==="rest"?newer.detail.rest:undefined;
+    const oldRest=row.detail?.kind==="rest"?row.detail.rest:undefined;
+    const sameSession=newRest ? oldRest ? newRest.since===oldRest.since : newRest.since<=row.made : !oldRest;
+    if (newer?.kind === "rest" && row.kind === "rest" && newer.label === row.label &&
+        !newer.remark && !row.remark && !!newer.detail === !!row.detail && sameSession &&
+        row.made <= newer.made && Math.abs(row.until-newer.made)<=1000) {
+      newer.made = row.made;
+      newer.restCount = (newer.restCount ?? 1) + 1;
+    } else grouped.push({...row});
+  }
+  return grouped;
+}
 export function videoPart(r: Pick<Reading, "source" | "action" | "level" | "page">) {
   if (r.source === "bili" && (["open", "subtitles", "frames"].includes(r.action) ||
       ["subtitles", "storyboard_viewed", "storyboard_available"].includes(r.level))) return r.page;

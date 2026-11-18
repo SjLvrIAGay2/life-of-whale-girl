@@ -3,6 +3,7 @@ import type { State } from "../content/initial";
 import { experienceLabel, videoPart, type Experience, type PublicActivity, type Reading, type Visibility } from "../content/activity";
 import { gameCatalog, legalMoves, playGame, type Game, type GameCommand } from "./games";
 import { isBiliAccountRead, type Observation, type ReadRequest } from "./media";
+import { reflectionActivities } from "./reflection";
 type Row = { id: string; made: number; until: number; visibility: Visibility; detail: string };
 type Turn = { state: State; now: number; writes: D1PreparedStatement[] };
 export function endActivity(t: Turn) {
@@ -117,9 +118,7 @@ export async function leisureContext(state: State) {
   const saves = await all<{ id: string; kind: Game["kind"]; updated: number; position: string }>(
     "SELECT * FROM play_saves ORDER BY updated DESC,rowid DESC LIMIT 12",
   );
-  const recent = await all<{ id: string; made: number; visibility: Visibility; kind: string }>(
-    "SELECT id,made,visibility,json_extract(detail,'$.detail.kind') AS kind FROM activities ORDER BY made DESC,rowid DESC LIMIT 10",
-  );
+  const recent = await reflectionActivities();
   const bookmarks = await all<{value:string}>("SELECT value FROM channel_state WHERE id GLOB 'reading-progress/*' AND json_extract(value,'$.source') IN ('bili','heybox') ORDER BY rowid DESC LIMIT 6");
   return {
     latest: state.lastAction ? accountContext(state.lastResult) : undefined,

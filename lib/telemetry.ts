@@ -1,6 +1,25 @@
 import { all, one, stmt } from "../db";
 import { dayOf } from "../content/initial";
 import { failureReason } from "./diagnostics";
+import type { State } from "../content/initial";
+
+// Private, bounded diagnostics keep chosen timing and targets next to their actual receipts.
+// Arbitrary tool arguments and conversation messages are deliberately excluded.
+export function activityTrace(now:number, choice:unknown, state:State) {
+  const raw=choice && typeof choice==="object" ? choice as Record<string,unknown> : {};
+  const requested:Record<string,unknown>={};
+  for (const key of ["action","minutes","posture","evidenceId","idea","thought"])
+    if (typeof raw[key]==="string") requested[key]=raw[key].slice(0,600);
+    else if (typeof raw[key]==="number" || raw[key]===null) requested[key]=raw[key];
+  if (raw.question===null) requested.question=null;
+  const result=state.lastResult as {field?:string;rest?:unknown}|undefined;
+  return [stmt("INSERT INTO channel_state(id,value) VALUES(?,?)",
+    "activity-decision/"+String(now).padStart(16,"0")+"/"+crypto.randomUUID(),
+    JSON.stringify({at:now,requested,outcome:state.lastAction,field:result?.field,rest:result?.rest,
+      nextAt:state.nextAt,mode:state.mode,inBed:!!state.inBed})),
+    stmt(`DELETE FROM channel_state WHERE id LIKE 'activity-decision/%' AND id NOT IN
+      (SELECT id FROM channel_state WHERE id LIKE 'activity-decision/%' ORDER BY id DESC LIMIT 256)`)];
+}
 
 export type Meter={prompt_tokens?:number;completion_tokens?:number;total_cost?:number;currency?:string};
 export async function measured<T>(task:string,model:string,now:number,fn:(receipt:(usage?:Meter)=>void)=>Promise<T>) {

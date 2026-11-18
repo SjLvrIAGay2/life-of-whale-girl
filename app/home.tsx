@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, type CSSProperties } from "react";
 import { furniture, hourOf, type PublicHome, type RoomItem } from "../content/initial";
-import { activityTime, levelNames, sourceNames, type PublicActivity } from "../content/activity";
+import { activityTime, groupRestActivities, levelNames, sourceNames, type PublicActivity } from "../content/activity";
 import { defaultSite, findActivity, type Block, type Site } from "../content/site";
 import { ActivityDetail, Board, Interactive } from "./activity";
 import { StudioPanel } from "./panels";
@@ -246,14 +246,14 @@ function Pages({
           <Stack gap="3">
             {heading}
             {list.length ? (
-              list.slice(0, full ? 48 : 6).map((a) => (
+              groupRestActivities(list).slice(0, full ? 48 : 6).map((a) => (
                 <Link className="log-entry" underline="none" key={a.id} href={entry(a)}>
                   <Text className="log-date">{moment(a.made)}</Text>
                   <Stack gap="1">
                     <Text className="log-title">{logTitle(a)}</Text>
                     {a.detail && (
                       <Text size="sm" tone="secondary">
-                        {a.label}
+                        {a.restCount ? "连续休息 · "+Math.max(0,Math.floor((Math.min(now,a.until)-a.made)/60000))+" 分钟" : a.label}
                       </Text>
                     )}
                   </Stack>

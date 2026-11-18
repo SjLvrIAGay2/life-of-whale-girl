@@ -50,7 +50,7 @@ import { gameKinds } from "./games";
 import { endActivity, publicActivities, leisureContext, play, readExperience, record } from "./activities";
 import { editSite, studioSchema } from "./studio";
 import { publicHome } from "../db";
-import { trace } from "./telemetry";
+import { activityTrace, trace } from "./telemetry";
 import { beginSleep, isClockUpgrade, setAlarm, sleepContext, upgradeSleep, wakeBody } from "./sleep";
 import { chatOutcome, finishAction, readingBookmark, receiptForModel, recoverLastAction, savedFailure, type Outcome } from "./action-result";
 import { duePersonalPlans, planReading, readingCompletion, readingGoals, type ReadingTarget } from "./personal-plans";
@@ -59,6 +59,8 @@ import { personalReading } from "./reading-progress";
 import { discoveryDesk } from "./discovery";
 import { upgradeExperience } from "./experience-migration";
 import { readingOutcome, sourceNames } from "../content/activity";
+import { currentRest, defaultRestMinutes, restContext } from "./rest";
+import { reflectionActivities, ReflectionInputError, reflectionTarget } from "./reflection";
 
 const hour = 3600000;
 const clip = (v: unknown, n = 600) =>
@@ -530,6 +532,7 @@ async function execute(
   contacts: ChatContact[],
 ) {
   const s = t.state;
+  const continuingRest = a.action === "rest" ? await currentRest(s,t.now) : undefined;
   endActivity(t);
   s.activity = "在小屋";
   const ink =
@@ -538,7 +541,7 @@ async function execute(
   const interactive=["help","play","read","site","archive","object"].includes(a.action) || (a.action==="work" && (a.work as {action?:string})?.action==="browse");
   const quick=interactive && a.minutes===undefined && (s.quickSteps??0)<3;
   s.quickSteps=quick ? (s.quickSteps??0)+1 : 0;
-  s.nextAt=t.now+(quick ? 2000 : (a.minutes??(interactive?5:50))*60000);
+  s.nextAt=t.now+(quick ? 2000 : (a.minutes??(a.action==="rest"?defaultRestMinutes:interactive?5:50))*60000);
   const visibility=a.visibility??s.sharing??"detail";
   const scope=visibility==="detail" && !["summary","hidden"].includes(s.sharing??"detail")?siteScope:privateScope;
   if (a.action!=="sleep" && a.action!=="get_up") {
@@ -560,7 +563,8 @@ async function execute(
   switch (a.action) {
     case "help": {
       const name = a.name && actionSchema.shape.action.parse(a.name);
-      const result = name ? { name, usage: activityHelp[name] } : { actions: actionSchema.shape.action.options };
+      const result = name ? { name, usage: activityHelp[name],
+        ...(name==="reflect"?{activities:await reflectionActivities()}: {}) } : { actions: actionSchema.shape.action.options };
       outcome = { status: "done", summary: "查看了" + (name ?? "日常动作") + "的用法。", result };
       break;
     }
@@ -584,11 +588,15 @@ async function execute(
       } else s.sharing=a.visibility;
       outcome={status:"done",summary:"已调整"+(a.evidenceId?"这次活动":"今后活动")+"的公开程度。",ref:a.evidenceId,
         result:{visibility:a.visibility,id:a.evidenceId}};break;
-    case "reflect":
+    case "reflect": {
+      const target = await reflectionTarget(a.evidenceId,a.idea);
       s.shareEpoch=crypto.randomUUID();
-      if(!a.idea || !await one("SELECT 1 FROM activities WHERE id=?",a.evidenceId??"")) throw Error("需要活动编号和自己想写的原话");
-      t.writes.push(stmt("UPDATE activities SET detail=json_set(detail,'$.remark',?) WHERE id=?",a.idea,a.evidenceId));
-      outcome={status:"done",summary:"给这次活动留下了感想。",ref:a.evidenceId,result:{annotated:a.evidenceId}};break;
+      t.writes.push(stmt("UPDATE activities SET detail=json_set(detail,'$.remark',?) WHERE id=?",a.idea!.trim(),target));
+      outcome={status:"done",summary:"给这次活动留下了感想。",ref:target,result:{annotated:target,remark:a.idea!.trim()}};
+      if (a.question===null && s.question) remember(t,privateScope,"understanding",
+        "曾经的问题："+s.question.text+"\n自己留下的看法："+a.idea!.trim(),{evidence:JSON.stringify([target])});
+      break;
+    }
     case "archive": {
       if(!a.archive) throw Error("请选活动或梦境档案");
       const {kind,query,date,offset}=a.archive;
@@ -910,7 +918,15 @@ async function execute(
     }
     case "rest": {
       const description=s.inBed?"醒着，在床上躺一会儿":"在小屋里歇一会儿";
-      outcome={status:"started",summary:description+"。",ref:record(t,{kind:"rest",description},a.visibility)};
+      const posture=s.inBed?"in_bed" as const:"up" as const;
+      const since=continuingRest?.posture===posture?continuingRest.since:t.now;
+      const minutes=(s.nextAt-t.now)/60000;
+      const rest={since,posture,minutes,timing:a.minutes===undefined?"default" as const:"chosen" as const};
+      const ref=record(t,{kind:"rest",description,rest},a.visibility);
+      const elapsed=Math.floor(Math.max(0,t.now-since)/60000);
+      outcome={status:"started",summary:description+"。"+(elapsed?"已连续休息 "+elapsed+" 分钟，":"")+
+        (a.minutes===undefined?"未指定时长，先歇 ":"这次再歇 ")+minutes+" 分钟，"+shanghaiDate(s.nextAt)+" 再想做什么。",
+        ref,result:{rest:{...restContext({since,posture},s,t.now),minutes,timing:rest.timing}}};
       break;
     }
   }
@@ -1217,6 +1233,7 @@ export async function respond(
   const sharedDetail=(t.state.sharing??"detail")==="detail";
   const detailAllowed=async (id?:string)=>!!id && sharedDetail && !!await one("SELECT id FROM activities WHERE id=? AND visibility='detail'",id);
   const interruptedActivity=await detailAllowed(current)?t.state.activity:undefined;
+  const interruptedRest=interruptedActivity ? restContext(await currentRest(t.state,t.now),t.state,t.now) : undefined;
   if(t.state.mode==="awake") {
     endActivity(t);
     t.state.activity=t.state.inBed?"醒着，在床上躺一会儿":"在小屋";
@@ -1289,6 +1306,7 @@ export async function respond(
       receivedAt: last ? shanghaiDate(last.made) : undefined,
       interactions:interactions.length?interactions:undefined,
       activity: interruptedActivity,
+      rest: interruptedRest,
       lastAction:mentionsAvoided(JSON.stringify(lastAction??null),avoid)?undefined:lastAction,
       attention: attention && !mentionsAvoided(attention,avoid)?attention:undefined,
       sharedLink: reading && { request:shared?.link, level: reading.level, status: reading.status,
@@ -1534,6 +1552,7 @@ export async function tick(
       );
       const contacts = await chatContacts(now);
       const sleep = await sleepContext(state, now);
+      const rest = restContext(await currentRest(state,now),state,now);
       const visibleState = receiptForModel(state);
       const [leisure, readingProgress, previous]=await Promise.all([
         leisureContext(visibleState),personalReading(state.question),
@@ -1546,7 +1565,9 @@ export async function tick(
       const help = state.lastAction?.action === "help" ? state.lastResult : undefined;
       if(archive || help || state.lastAction?.action==="object") leisure.latest=undefined;
       const decision = {
-        self: persona(defs), sleep, readingProgress,desk,works,cabin,help,archive,duePlans,
+        self: persona(defs), sleep, rest, readingProgress,desk,works,cabin,help,archive,duePlans,
+        reflection:state.lastAction?.action==="reflect" && state.lastAction.status==="failed"
+          ? {usage:activityHelp.reflect,activities:leisure.recent} : undefined,
         question:state.question?.source && !readingSources.includes(state.question.source) ? {text:state.question.text} : state.question??(state.attention?{text:state.attention}:undefined),
         lastAction: visibleState.lastAction && {...visibleState.lastAction,time:shanghaiDate(visibleState.lastAction.made)},
         routine,writingHabit:writingHabit(state,now),leisure,
@@ -1596,11 +1617,18 @@ export async function tick(
         t.writes.length = mark;
         t.newMem.length = count;
         state = t.state = before;
-        state.nextAt = now + 15 * 60000;
         endActivity(t);
         const action=actionSchema.shape.action.safeParse(result?.action).data ?? "unknown";
+        const field=error instanceof ReflectionInputError ? error.field : action==="reflect" && error instanceof z.ZodError
+          ? error.issues[0].path.join(".") : undefined;
+        const prior=before.lastResult as {field?:string;attempts?:number}|undefined;
+        const attempts=field && before.lastAction?.action===action && before.lastAction.status==="failed" && prior?.field===field
+          ? (prior.attempts??1)+1 : 1;
+        state.nextAt = now + (field ? [1,5,15][Math.min(attempts-1,2)] : 15) * 60000;
         const detail=actionProblem(error);
-        finishAction(state,action,now,{status:"failed",summary:"这次动作未完成。"+detail,result:{error:detail}});
+        finishAction(state,action,now,{status:"failed",summary:"这次动作未完成。"+detail,
+          result:{error:detail,...(field ? {field,attempts,
+            received:{evidenceId:clip(result?.evidenceId,80),idea:clip(result?.idea,350)}} : {})}});
         state.activity = "在小屋";
         remember(
           t,
@@ -1608,8 +1636,10 @@ export async function tick(
           "access",
           "动作 " + (actionSchema.shape.action.safeParse(result?.action).data || "未识别") +
             " 未完成，原因 " + failureReason(error) + "。",
+          {details:JSON.stringify({action,problem:detail,...(field?{field,attempts}: {})})},
         );
       }
+      t.writes.push(...activityTrace(now,result,state));
     }
     if (
       t.writes.length ||
