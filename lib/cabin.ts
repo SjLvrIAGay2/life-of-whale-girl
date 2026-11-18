@@ -22,8 +22,9 @@ import {
 } from "./cabin-model";
 import { describeBehavior, runBehavior, type ObjectHost } from "./cabin-behavior";
 import { Cabin, loadCabin, syncFurniture } from "./cabin-store";
+import { actionProblem } from "./diagnostics";
 
-const opKey = { requestId: z.string().trim().min(1).max(128) };
+const opKey = { requestId: z.string().trim().min(1).max(128).default(() => crypto.randomUUID()) };
 const target = { id: itemId };
 const action = { ...target, action: key };
 const catalog = z
@@ -37,7 +38,7 @@ const catalog = z
   .strict();
 const operations = z.discriminatedUnion("op", [
   catalog,
-  z.object({ op: z.literal("inspect"), ...target }).strict(),
+  z.object({ op: z.literal("inspect"), ...target, action: key.optional() }).strict(),
   z.object({ op: z.literal("type"), type: key }).strict(),
   z
     .object({
@@ -107,24 +108,40 @@ const labels: Record<Command["op"], string> = {
   remove: "移除了物品",
   consume: "吃掉了物品",
   call: "调用了对象动作",
-  preview: "在副本上试跑成功",
+  preview: "试跑成功",
   activate: "启用了试跑过的动作",
   rollback: "恢复了上一个动作版本",
 };
-const help = {
-  commands,
-  capabilities,
-  units:
-    "size 为 [宽,深,高] cm，质量 g，软件容量 MB。区域坐标属于父对象，旋转单位为度。写操作使用唯一 requestId，重试原样发送。",
-  extension:
-    "preview 在指定实例副本上试跑，activate 用返回的 preview 编号启用，rollback 回到上一版。配方沿用 read/take/join/caption/draw，增加 state.get、state.append 和 replay。",
-};
+type Input = z.input<typeof operations>;
+const guides = {
+  catalog: { example: { op: "catalog", query: "糖" }, tip: "可按名称 query、类型 type 或容器 parent 找物品，用 nextOffset 继续翻。" },
+  inspect: { example: { op: "inspect", id: "sill" }, tip: "查看位置、可用区域和动作。想改写某个动作，加上动作名 action 看它的做法。" },
+  type: { example: { op: "type", type: "box" }, tip: "查看这种物品的定义，可用作新类型的起点。" },
+  help: { example: { op: "help", command: "move" }, tip: "command 查操作，capability 查能力。" },
+  define: { example: { op: "define", type: "mint", definition: { name: "薄荷糖", size: [1.3, 1, 1], massG: 2, consumable: true } },
+    tip: "type 用小写英文开头。definition 必填 name、size（宽、深、高，厘米）、massG（克）。可加 description、color、volumeCm3、rotations、consumable、installMB、state、actions。内腔用 regions:{inside:{label,relation:'inside',size,loadG}}，预装内容用 contents:[{type,region,count}]。" },
+  defaults: { example: { op: "defaults", type: "box", patch: { color: "浅蓝" } }, tip: "patch 填要改的定义项，新做的物品会采用这些值。" },
+  create: { example: { op: "create", type: "box", to: { parent: "sill", region: "top" } }, tip: "填 to 可以直接摆好。省略 to 时物品先收着。" },
+  update: { example: { op: "update", id: "desk", props: { color: "浅棕" } }, tip: "只改这一件。props 填属性，也可改 state、regions、refs 或 visibility。" },
+  find: { example: { op: "find", id: "computer", to: { parent: "desk", region: "top" } }, tip: "询问能放下的位置。物品留在原处。" },
+  move: { example: { op: "move", id: "computer", to: { parent: "desk", region: "top" } }, tip: "小屋会找空位。指定位置时在 to 填 x、y（厘米），可加 rotation（0、90、180、270 度）。放不下时物品留在原处。" },
+  stow: { example: { op: "stow", id: "computer" }, tip: "连同里边的东西一起收起。" },
+  remove: { example: { op: "remove", id: "物品编号" }, tip: "移除一件已清空、也没有被其他物品引用的物品。" },
+  consume: { example: { op: "consume", parent: "糖盒编号", region: "inside", type: "mint", count: 2 }, tip: "一次取用这个区域里指定数量的同类食品。" },
+  call: { example: { op: "call", id: "website", action: "open" }, tip: "选择物品列出的动作，需要的参数放在 args。" },
+  preview: { example: { op: "preview", id: "棋盘编号", action: "review",
+    behavior: { input: "integer", recipe: { description: "按手数看棋谱", steps: [{ op: "replay" }] } }, args: { input: 1 } },
+    tip: "试跑只给出预期效果。behavior 可填 capability，也可填 input 和 recipe。input 选 none、text、integer。步骤可用 read（source、可选 query）、take（count）、join（separator）、caption（text）、draw（idea）、state.get（key）、state.append（key、text）、replay（按手数看棋）。用 $input 引用输入，$result 引用上一步的结果。" },
+  activate: { example: { op: "activate", id: "棋盘编号", action: "review", preview: "试跑编号" }, tip: "填试跑返回的 preview，下一次使用即生效。" },
+  rollback: { example: { op: "rollback", id: "棋盘编号", action: "review" }, tip: "撤回这个动作最近的一次修改。" },
+} satisfies { [K in Command["op"]]: { example: Extract<Input, { op: K }>; tip: string } };
+
 function manual(cmd: Extract<Command, { op: "help" }>) {
   if (cmd.capability) return describeBehavior({ capability: cmd.capability });
-  if (!cmd.command) return help;
-  const schema = operations.options.find((o) => o.shape.op.value === cmd.command);
-  if (!schema) throw Error("找不到操作 " + cmd.command);
-  return z.toJSONSchema(schema, { io: "input", unrepresentable: "any" });
+  if (!cmd.command) return { commands, capabilities, example: guides.create.example };
+  const command = commands.find((op) => op === cmd.command);
+  if (!command) throw Error("找不到操作 " + cmd.command + "。可选 " + commands.join("、"));
+  return guides[command];
 }
 
 function catalogPage(cabin: Cabin, cmd: z.infer<typeof catalog>) {
@@ -154,6 +171,15 @@ function catalogPage(cabin: Cabin, cmd: z.infer<typeof catalog>) {
     nextOffset: Math.max(types.length, items.length) > end ? end : undefined,
   };
 }
+function visibleState(item: Item) {
+  const record = item.state.legacy;
+  if (!item.importedFurniture && item.type === "keepsake" && record && typeof record === "object" && !Array.isArray(record) &&
+      record.id === item.id && typeof record.kind === "string" && typeof record.x === "number" && typeof record.y === "number") {
+    const { legacy: _, ...state } = item.state;
+    return state;
+  }
+  return item.state;
+}
 function inspect(cabin: Cabin, item: Item) {
   const children = cabin.children(item.id).filter((i) => cabin.usable(i));
   const regions = Object.values(item.regions);
@@ -166,7 +192,7 @@ function inspect(cabin: Cabin, item: Item) {
     canSupport: regions.some((r) => r.relation === "on"),
     canHang: regions.some((r) => r.relation === "hang"),
     totalMassG: cabin.mass(item),
-    state: item.state,
+    state: visibleState(item),
     at: item.at,
     refs: item.refs.filter((id) => cabin.usable(cabin.get(id))),
     path: cabin.path(item).map((i) => i.id),
@@ -183,7 +209,7 @@ function inspect(cabin: Cabin, item: Item) {
     actions: Object.fromEntries(
       Object.entries(item.actions).map(([k, b]) => [
         k,
-        { ...describeBehavior(b), version: item.versions[k] },
+        describeBehavior(b),
       ]),
     ),
   };
@@ -197,15 +223,6 @@ function canonical(value: unknown): unknown {
         .map(([k, v]) => [k, canonical(v)]),
     );
   return value;
-}
-function friendly(error: unknown) {
-  if (error instanceof z.ZodError)
-    return error.issues
-      .slice(0, 2)
-      .map((i) => i.path.join(".") + " " + i.message)
-      .join("；")
-      .slice(0, 400);
-  return error instanceof Error ? error.message.slice(0, 400) : "小屋操作失败";
 }
 type Draft = { item: string; action: string; base: string | null; behavior: string; args: string };
 const versionName = (item: Item, action: string) => "cabin/" + encodeURIComponent(item.id) + "/" + action;
@@ -267,8 +284,14 @@ async function apply(
   const item = cabin.owned(cmd.id);
   cabin.accessible(item);
   switch (cmd.op) {
-    case "inspect":
+    case "inspect": {
+      if (cmd.action) {
+        const behavior = item.actions[cmd.action];
+        if (!behavior) throw Error(item.props.name + " 没有动作 " + cmd.action);
+        return { id: item.id, action: cmd.action, behavior, ...describeBehavior(behavior) };
+      }
       return inspect(cabin, item);
+    }
     case "move":
     case "find": {
       cabin.owned(cmd.to.parent);
@@ -329,7 +352,7 @@ async function apply(
           JSON.stringify(cmd.args ?? {}),
         ),
       );
-      return { preview: id, result, state: sample.state };
+      return { preview: id, result, state: visibleState(sample) };
     }
     case "activate": {
       const draft = await one<Draft>("SELECT * FROM cabin_previews WHERE id=?", cmd.preview);
@@ -426,7 +449,7 @@ export async function cabinAction(
     }
   } catch (e) {
     writes.length = 0;
-    const error = friendly(e);
+    const error = actionProblem(e);
     outcome = { status: "failed", summary: error, result: { error } };
   }
   if (id)
@@ -438,9 +461,12 @@ export async function cabinContext(state: State) {
   const listing = catalogPage(cabin, catalog.parse({ op: "catalog" }));
   return {
     latest: state.lastAction?.action === "object" ? state.lastResult : undefined,
-    entry: { action: "object", object: { op: "help" } },
-    commands,
-    items: listing.items.map(({ id, type, name }) => ({ id, type, name })),
+    types: listing.types,
+    items: listing.items.map(({ id, type, name, at }) => {
+      const item = cabin.get(id);
+      return { id, type, name, at: at && { parent: at.parent, region: at.region },
+        regions: Object.keys(item.regions), actions: Object.keys(item.actions) };
+    }),
     total: listing.total,
   };
 }

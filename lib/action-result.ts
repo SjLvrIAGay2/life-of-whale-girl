@@ -1,10 +1,34 @@
 import { createHash } from "node:crypto";
 import type { ActionReceipt, State } from "../content/initial";
-import type { Experience, Reading } from "../content/activity";
+import { readingOutcome, sourceNames, type Experience, type Reading } from "../content/activity";
 import { all, one, stmt } from "../db";
 import type { Observation, ReadRequest } from "./media";
 
 export type Outcome = Pick<ActionReceipt, "status" | "summary" | "ref"> & { result?: unknown };
+
+// Present older system-generated failure records in the same language as current receipts.
+export function savedFailure(message: string) {
+  const reason = message.replace(/^(?:动作 \w+ 未完成，原因 |这次动作未完成。)/, "");
+  const parameter = /^invalid_parameters\/([\w.]+)\/\w+。?$/.exec(reason);
+  if (parameter) return parameter[1] === "root" ? "请检查这次动作的参数。" : "请检查 " + parameter[1] + " 的写法。";
+  const invalid = /^([\w.]+)[： ](?:Invalid (?:input|option|string)|Too (?:small|big)|Unrecognized keys?)\b/.exec(reason);
+  if (invalid) return "请检查 " + invalid[1] + " 的写法。";
+  const media = /^(bili|heybox) 的 (\w+) 返回 (\w+)。/.exec(reason);
+  if (media) {
+    const source = media[1] === "bili" ? "bili" : "heybox";
+    return "在" + sourceNames[source] + readingOutcome({ source, action: media[2], status: media[3], level: "" }) + "。";
+  }
+  if (/^(?:\w*Error|[A-Z][A-Z_0-9]+|operation_failed|unknown_error)。?$/.test(reason)) return "暂时无法完成，可以稍后再试。";
+  return message;
+}
+
+export function receiptForModel(state: State): State {
+  if (state.lastAction?.status !== "failed") return state;
+  const { lastAction, lastResult } = state;
+  const result = lastResult && typeof lastResult === "object" && "error" in lastResult && typeof lastResult.error === "string"
+    ? { ...lastResult, error: savedFailure(lastResult.error) } : lastResult;
+  return { ...state, lastAction: { ...lastAction, summary: savedFailure(lastAction.summary) }, lastResult: result };
+}
 
 export function finishAction(state: State, action: string, made: number, outcome: Outcome, scope = "self") {
   const { result, status, summary, ref } = outcome;
@@ -66,8 +90,12 @@ async function historicalOutcome(made: number, legacy: OldResult | undefined): P
       case "game": return {action:"play",made,status:"done",summary:detail.op==="look"?"查看了游戏存档。":detail.game.feedback,ref};
       case "rest": case "sleep": return {action:detail.kind,made,status:"started",summary:detail.description,ref};
       case "room": return {action:"room",made,status:"done",summary:room?.body ?? detail.description,ref};
-      case "reading": return {action:"read",made,status:detail.status==="unverified"?"unverified":(detail.status && detail.status!=="ok") || (legacy?.id===ref && legacy.status && legacy.status!=="ok") ? "failed" : "done",
-        summary:"当时的读取记录："+detail.level+" · "+(detail.items[0]?.title ?? "无条目"),ref};
+      case "reading": {
+        const savedStatus = legacy?.id === ref ? legacy.status : undefined;
+        const status = detail.status && detail.status !== "ok" ? detail.status : savedStatus ?? detail.status;
+        return {action:"read",made,status:status==="unverified"?"unverified":status && status!=="ok"?"failed":"done",
+          summary:sourceNames[detail.source]+" · "+readingOutcome({...detail,status})+(detail.items[0]?.title?" · "+detail.items[0].title:""),ref};
+      }
       case "draw": if (job) return {action:"draw",made,status:"queued",summary:"画稿已排队："+job.idea,ref:job.id};
     }
   }

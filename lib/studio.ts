@@ -6,6 +6,7 @@ import {
   defaultSite,
   libraryCommit,
   programGuide,
+  siteUsage,
   programRows,
   programFrame,
   type Block,
@@ -193,22 +194,24 @@ async function draftSite() {
   const row = await reference("draft");
   return row ? (JSON.parse(row.value) as Site) : await publishedSite();
 }
-export async function studioCatalog() {
-  const site = await draftSite();
+function componentCatalog(site: Site) {
   return {
-    yuki: libraryCommit,
     blocks: blockCatalog,
-    components: site.components,
-    program: programGuide,
-    examples: Object.values(site.components).map((p) => ({
+    components: Object.fromEntries(Object.values(site.components).map((p) => [p.name, {
       purpose: p.purpose,
       data: p.source,
       parameters: "title?, bind?, desktop?, mobile?",
       example: { id: "my-" + p.name.slice(0, 32), type: p.name, ...(p.bind ? { bind: p.bind } : {}) },
-    })),
+    }])),
+    usage: siteUsage,
     layout:
       "每项 desktop/mobile 的 span 是 1..12 列，order 指显示顺序。section.children 可嵌套。nav 引用 pages 内 slug。",
   };
+}
+export async function studioCatalog(draft?: Site) {
+  const site = draft ?? await draftSite();
+  const catalog = componentCatalog(site);
+  return { ...catalog, yuki: libraryCommit, components: site.components, program: programGuide, examples: Object.values(catalog.components) };
 }
 export const studioCommands = [
   "catalog",
@@ -261,7 +264,7 @@ function location(blocks: Block[], id: string): { list: Block[]; index: number }
     if (nested) return nested;
   }
 }
-export async function editSite(raw: unknown, now: number, home: (site?: Site) => Promise<PublicHome>) {
+export async function editSite(raw: unknown, now: number, home: (site?: Site) => Promise<PublicHome>, audience: "resident" | "operator" = "operator") {
   const q = studioSchema.parse(raw),
     writes: D1PreparedStatement[] = [];
   let site = await draftSite();
@@ -271,7 +274,7 @@ export async function editSite(raw: unknown, now: number, home: (site?: Site) =>
   let result: unknown;
   switch (q.op) {
     case "catalog":
-      result = await studioCatalog();
+      result = audience === "resident" ? componentCatalog(site) : await studioCatalog(site);
       break;
     case "sources": {
       const start = q.date ? Date.parse(q.date + "T00:00:00+08:00") : 0,
@@ -378,19 +381,18 @@ export async function editSite(raw: unknown, now: number, home: (site?: Site) =>
     }
     case "commission": {
       if (!q.idea) throw Error("说说希望组件怎样工作");
-      const catalog = await studioCatalog();
       if (q.name && !site.components[q.name]) throw Error("目录里没有要修改的组件");
       const local = composePiece(q.idea);
       if (local && q.name) local.name = q.name;
       const spec =
         local ??
         (await think(
-          "你是鲸鱼娘委托的 Yuki 组件制作者。只输出一个新的可运行声明式组件 JSON {name,purpose,source,start,view}。依据想法组合任意目录内的 Yuki 节点和交互。name 用英文小写短横线，修改已有组件要沿用原名。选择数据源，不复制或编造内容。批注使用 note 字段，只有实际有批注时才显示。view 的节点为 {ui,text?,field?,when?,step?,children?}，不要传目录里没有的字段。无法实现时只返回 {error:具体缺少的能力}。",
+          "按 idea 制作组件，返回 {name,purpose,source,start,view}。name 用小写英文和短横线，修改时沿用原名。按 catalog.bindings 选素材字段，按 primitives 组合节点 {ui,text?,field?,when?,step?,children?}。批注用 note，有内容时才显示。做不到时返回 {error:缺少的能力}。",
           {
             idea: q.idea,
             name: q.name,
             existing: q.name ? site.components[q.name] : undefined,
-            catalog,
+            catalog: programGuide,
           },
           now,
           "activity",

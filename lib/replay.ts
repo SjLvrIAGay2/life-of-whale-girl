@@ -50,8 +50,9 @@ export async function replayScenario(id:string,self:string,call:(instruction:str
     const memories=acrossDays?[{id:"fixture-prior",kind:"conversation",speaker:"好友",date:"2026-05-11",text:scenario.turns[0]}]:[];
     const promises=id==="week" && acrossDays?[{id:"fixture-promise",what:"回来聊《红猪》",due:"2026-05-23T15:00"}]:[];
     const works=id==="evidence"?[{id:"fixture-work",title:"给好友的画",state:"active",drawingState:"pending",next:"画第一稿"}]:[];
-    const result=await call(chatInstructions,{intent:"接话",self,relationship:"好友",mood:"平静",time,activity:"在小屋",
-      recent:acrossDays?[]:history,unread:[{text:turn}],friendCard:{facts:[],promises},context:memories,works,visuals:[],art:[],stickers:[]});
+    const chat={intent:"接话",self,relationship:"好友",mood:"平静",time,activity:"在小屋",
+      recent:acrossDays?[]:history,unread:[{text:turn}],friendCard:{facts:[],promises},context:memories,works,visuals:[],art:[],stickers:[]};
+    const result=await call(chatInstructions(chat),chat);
     const parts=(Array.isArray(result.messages)?result.messages:[result.text]).filter((s:unknown)=>typeof s==="string");
     lastDecision=result.decision??"send";
     const text=lastDecision==="silent"?"（已读）":parts.join("\n");

@@ -1,11 +1,11 @@
 import { z } from "zod";
-import type { ObjectKind } from "../content/initial";
+import type { ObjectKind, RoomItem } from "../content/initial";
 import { objectRecipe } from "./toolbox";
 import { gameKinds } from "./games";
 
 export const key = z
   .string()
-  .regex(/^[a-z][a-z0-9_-]{0,47}$/)
+  .regex(/^[a-z][a-z0-9_-]{0,47}$/, "编号用小写字母开头，可含小写字母、数字、短横线或下划线，最多 48 个字符")
   .refine((k) => !Object.hasOwn(Object.prototype, k), "编号是保留字");
 export const itemId = z.string().min(1).max(240);
 const measure = z.number().positive().max(2000);
@@ -121,6 +121,7 @@ export type Item = {
   at: Location | null;
   visibility: z.infer<typeof visibility>;
   art?: { kind: ObjectKind; dx: number; dy: number };
+  importedFurniture?: RoomItem;
   createdGame?: true;
   source?: { kind: "work" | "picture" | "game"; id: string; scope: string; title?: string };
 };
@@ -273,5 +274,5 @@ export const builtins: Record<string, Definition> = {
     massG: 5,
     actions: { open: { capability: "picture" } },
   }),
-  keepsake: built({ name: "旧物件", size: [1, 1, 1], massG: 0 }),
+  keepsake: built({ name: "纪念物", size: [1, 1, 1], massG: 0 }),
 };

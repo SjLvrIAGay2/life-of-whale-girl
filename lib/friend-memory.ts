@@ -47,7 +47,7 @@ export function shanghaiDate(ms:number) {
   return new Date(ms+8*3600000).toISOString().slice(0,16);
 }
 export const profileInstructions =
-  "profile 仅提取有原话依据的事实，每项 {topic,value,source,quote,category:'stated'|'temporary'|'habit'|'joke',when?,remove?}。source 是输入行的整数编号，quote 是逐字原话。玩笑不进卡；临时状态写时间原话 when；观察到的习惯标 habit，必须跨日佐证。明确自述用 stated。称呼统一 topic=称呼，偏好变化沿用原主题，明确撤销且无替代用 remove=true。";
+  "想记下好友自述时填 profile:[{topic,value,source,quote,category,when?,remove?}]。source 填原话序号，quote 逐字引用。自述用 stated，临时状态用 temporary 并摘录时间，多天印证的习惯用 habit。跳过玩笑。称呼用 topic=称呼，偏好有变沿用原主题，明确撤销用 remove=true。";
 
 export function profileWrites(scope: string, raw: unknown, lines: SourceLine[]) {
   const writes: D1PreparedStatement[] = [];
@@ -94,7 +94,7 @@ export async function reviewFriendBatch(now: number) {
   let size=0;
   const lines: SourceLine[]=[];
   for (const row of rows) { if (lines.length && size+row.body.length>11500) break; lines.push(row); size+=row.body.length; }
-  const answer = await think("你在睡中为一位好友整理新增来信。每一行都是这同一个人的原话，按顺序整理。已有卡片可能包含比这些原话更新的观点，事实以原话发生时间为准。返回 {profile:[]}。"+profileInstructions,
+  const answer = await think("你在睡中为一位好友整理新增来信。按来信日期更新卡片，没有新事实就返回空的 profile 列表。"+profileInstructions,
     {lines:lines.map((l,i)=>({source:i+1,date:shanghaiDate(l.made),text:l.body})),card:cardContext(await friendCard(scope,now)).facts},now,"activity",undefined,"friend_review");
   if (!Array.isArray(answer?.profile)) throw Error("好友记忆整理格式错误");
   return [...profileWrites(scope,answer.profile,lines),
@@ -113,7 +113,7 @@ export async function reviewLegacyPromise(now:number) {
   const original=new Set<string>(JSON.parse(p.evidence));
   let when:string|null=null, due:number|null=null;
   if(lines.some(l=>l.side==="out" && original.has("chat-out-"+l.id))) {
-    const answer=await think("核对旧约定的时间。仅用所附同一位好友的原话识别这个约定何时履行。如有明确时间，返回 {source:行号,when:逐字时间短语,dueLocal?:上海时间YYYY-MM-DDTHH:mm}，无从确定返回 {when:null}。不要推测。",{
+    const answer=await think("核对约定的时间。从这段对话找出约定何时履行，返回 {source:行号,when:时间原话,dueLocal?:上海时间YYYY-MM-DDTHH:mm}。没说定就返回 {when:null}。",{
       promise:p.body,lines:lines.map((l,i)=>({source:i+1,side:l.side,date:shanghaiDate(l.made),text:l.body.slice(0,900)})),
     },now);
     const line=lines[Number(answer.source)-1], phrase=text(answer.when,120);

@@ -4,6 +4,7 @@ import { positionAt, type Move } from "../lib/games.ts";
 
 // The public document contains inert data. Only the renderer chooses React components.
 export const libraryCommit = "84cba63c5a729f4fe5d8117a488f70223abf12d3";
+export const siteUsage = "catalog 看组件及摆放样例，sources 用 date 查公开素材，inspect 看草稿。place 填 block，move/remove 填 id，可选 page、from、parent、before、desktop、mobile。commission 填 idea，可用 bind 指定素材、name 修改成品。page 填 page、title，drop-page 填 page，navigation 填 nav，theme 填 theme，save 填 document。preview 预览，publish 发布，rollback 撤回，可选 version。";
 export type Layout = { span?: number; order?: number };
 export type Block = {
   id: string;
@@ -47,20 +48,20 @@ export const blockCatalog = {
     example: { id: "corner", type: "section", children: [{ id: "memo", type: "note", text: "留给下次。" }] },
   },
   room: {
-    purpose: "按小屋存档摆放家具与人物",
+    purpose: "展示小屋里的人物和物品",
     parameters: "title?",
     data: "room",
     example: { id: "window", type: "room" },
   },
   note: {
     purpose: "图文便签",
-    parameters: "title?, text?, image?（房间素材路径或公开画作 ID）",
+    parameters: "title?, text?, image?（小屋素材路径）, bind?（公开画作或动态的编号）",
     data: "art:<id>、post:<日期>、post:latest 或无",
     example: { id: "paper", type: "note", text: "给自己留个位置。" },
   },
   art: {
-    purpose: "陈列公开画作；没有画作时可陈列角色设定素材",
-    parameters: "title?, image?（备用素材）",
+    purpose: "陈列公开画作，也可选角色设定图",
+    parameters: "title?, bind?（art:<编号>）, image?（备用素材路径）",
     data: "art:<id> 或最新公开画作",
     example: { id: "print", type: "art", image: "/whale-avatar.webp" },
   },
@@ -89,7 +90,7 @@ export const blockCatalog = {
     example: { id: "open", type: "detail" },
   },
   game: {
-    purpose: "棋盘或关卡的真实存档切片",
+    purpose: "展示一盘棋或一关推箱子的局面",
     parameters: "bind?",
     data: "activity:<id> 或最近公开的游戏",
     example: { id: "unfinished", type: "game" },

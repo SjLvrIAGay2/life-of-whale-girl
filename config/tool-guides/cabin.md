@@ -1,37 +1,35 @@
 # 小屋对象
 
-鲸鱼娘使用 `{"action":"object","object":{…}}`。下一轮的 `cabin.latest` 是实际操作结果。`catalog` 支持按名称、类型、父物品和页码偏移查询。`inspect` 接收实例编号，返回自身状态、位置、区域、承重、内容数量、总重和动作参数。`type` 返回创建新实例时使用的完整定义。`help` 可带 `command` 或 `capability` 查看参数格式。
+用 `action: "object"` 操作屋里的物品。物品编号、区域和动作在 `cabin.items`，可做的类型在 `cabin.types`。用编号选中同名物品。上一步的结果在 `cabin.latest`。查写法用 `help` 加操作名 `command` 或能力名 `capability`。
 
-## 只写一份定义
+## 做一颗薄荷糖，摆到窗沿
 
-下面两行分别登记一种薄荷糖，再生成一颗摆在窗沿。名字可以重复，后续移动、食用或修改时使用返回的实例编号。
-
-```jsonl
-{"action":"object","object":{"op":"define","requestId":"mint-type-1","type":"mint","definition":{"name":"薄荷糖","description":"一颗独立包装的薄荷糖","color":"#70aa92","size":[1.3,1,1],"massG":2,"consumable":true}}}
-{"action":"object","object":{"op":"create","requestId":"mint-1","type":"mint","to":{"parent":"sill","region":"top"}}}
-```
-
-在盒子的定义中加入 `"contents":[{"type":"mint","region":"inside","count":20}]`，每个新盒就会生成二十个各有编号的实例。用 `defaults` 改盒型，用 `update` 改指定实例。定义会随存档保存，常驻进程运行期间即可使用。
-
-## 给已摆好的棋盘加动作
-
-先用 `catalog` 查到棋盘的实例编号。以下是连续四次 `action:"object"` 的 `object` 字段。将 `棋盘编号` 换成实际编号，将 `试跑编号` 换成第一步返回的 `preview`。
+每行是一次完整动作。先定义薄荷糖，再用 `create` 指定窗沿。小屋会找能放下的位置。目录里已有 `mint` 时直接用第二行。
 
 ```jsonl
-{"op":"preview","requestId":"review-test","id":"棋盘编号","action":"review","behavior":{"input":"integer","recipe":{"description":"按手数查看原棋谱","steps":[{"op":"replay"}]}},"args":{"input":1}}
-{"op":"activate","requestId":"review-on","id":"棋盘编号","action":"review","preview":"试跑编号"}
-{"op":"call","requestId":"review-first","id":"棋盘编号","action":"review","args":{"input":1}}
-{"op":"rollback","requestId":"review-back","id":"棋盘编号","action":"review"}
+{"action":"object","object":{"op":"define","type":"mint","definition":{"name":"薄荷糖","size":[1.3,1,1],"massG":2,"consumable":true}}}
+{"action":"object","object":{"op":"create","type":"mint","to":{"parent":"sill","region":"top"}}}
 ```
 
-试跑读取原棋谱并复制实例状态。带副作用的读取、绘图和网站操作在预览时使用预览适配器。启用时会核对基线版本并用当前状态再试一次。版本链存入现有的 `agent_versions`。普通配方还能组合 `read`、`take`、`join`、`caption`、`draw`、`state.get` 和 `state.append`。阅读账号与网站工作桌由宿主调用。
+`size` 依次填宽、深、高，单位是厘米。`massG` 是克。要做一盒糖，可在有 `inside` 内腔的盒型定义里加 `"contents":[{"type":"mint","region":"inside","count":20}]`。以后每做一盒就有二十颗。改这一个盒子用 `update`，改下一批盒子用 `defaults`。
 
-## 位置和提交
+## 给棋盘加一个逐手复盘的动作
 
-旧家具只保存了画面百分比。迁移沿用每件家具的原编号，为它补上可调整的厘米尺寸和承重初值，并把原先摆在桌上的电脑关联到对应书桌。旧布局有重叠时会查找可用网格，保留原画面的摆放位置。
+把下面的 `棋盘编号` 换成屋里那块棋盘的 `id`。第一行试读第一手，第二行用返回的 `preview` 编号启用，第三行就是以后复盘的用法。
 
-- `size` 依次为宽、深、高，单位 cm。区域的 `size` 定义自身可用净尺寸，`opening` 为开口宽、高。`loadG` 按克限制区域内整棵子树的重量，`capacityCm3` 可进一步限制可用容积。软件声明 `installMB`，设备安装位声明 `capacityMB`。
-- 放置关系有表面 `on`、内腔 `inside`、悬挂 `hang`、部件 `part` 和安装 `installed`。每个区域单独使用 1 cm 网格。坐标四舍五入到格点，足迹向上取整。省略坐标时按允许朝向寻找空位。可先用 `find` 询问位置，`move` 提交时重新核验。
-- `stow` 整体收起物品、部件和内容。`remove` 要求物品已清空且没有其他物品引用它。原作品、画作和棋局可以整体收起。`consume` 从指定父对象和区域一次取用指定数量的可食用物品。
-- 每次新写操作使用新的 `requestId`。重发原请求会得到同一份回执。移动、宿主存档写入、回执和公开版本在同一笔带租约的 SQLite 事务中提交。
-- 访客可点房间中的物品标签或展开“小屋里的物品”。`detail` 展示局部位置和可见内容，`summary` 展示名称与所在区域，`hidden` 收起整棵子树。抽屉关闭时内容也会收起。便笺正文、原始棋谱批注和私人作品保留原有访问范围。
+```jsonl
+{"action":"object","object":{"op":"preview","id":"棋盘编号","action":"review","behavior":{"input":"integer","recipe":{"description":"按手数看棋谱","steps":[{"op":"replay"}]}},"args":{"input":1}}}
+{"action":"object","object":{"op":"activate","id":"棋盘编号","action":"review","preview":"试跑编号"}}
+{"action":"object","object":{"op":"call","id":"棋盘编号","action":"review","args":{"input":1}}}
+```
+
+试跑时原棋盘保持原样。想撤回修改时，用 `rollback` 指定同一棋盘和动作名。
+
+## 摆放和使用
+
+- 找物品用 `catalog`，可按名字 `query`、类型 `type` 或容器 `parent` 查找。用 `inspect` 查看一件物品的状态、区域、承重、内容和动作。想改写已有动作时，在 `inspect` 加上它的 `action`。用 `type` 查看整份类型定义。
+- 移动用 `move`，在 `to` 填目标物品 `parent` 和区域 `region`。想指定位置可填该区域内的 `x`、`y`，每格一厘米。需要先问哪里放得下时用 `find`。放不下会说明原因，东西留在原处。
+- 区域的关系可以是表面 `on`、内腔 `inside`、挂位 `hang`、部件 `part` 或安装位 `installed`。区域的 `size` 是可用净尺寸，`opening` 是开口的宽和高。`loadG` 按总重计，`capacityCm3` 按容积计。软件大小 `installMB` 和安装位容量 `capacityMB` 都按 MB 计。
+- 用 `call` 指定物品和动作，按它的样例填 `args`。用 `consume` 指定容器、区域、食品类型和数量，一次取用。用 `stow` 连同里面的东西一起收起，清空后可用 `remove` 移除可删除的物品。
+- 新动作直接发送。如果需要重复发送同一次写操作，第一次就带上自选的 `requestId`，重发时沿用它和原参数。不同的操作各用自己的编号。
+- `visibility` 可选 `detail`（访客可看位置和可见内容）、`summary`（名称和所在区域）或 `hidden`（整件藏起）。关上抽屉也会遮住里面的东西。

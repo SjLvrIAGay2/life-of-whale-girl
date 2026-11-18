@@ -115,7 +115,7 @@ export class Cabin extends Space {
   }
   remove(item: Item) {
     if (item.id === "cabin") throw Error("小屋地面是坐标原点");
-    if (item.source) throw Error("这个对象关联原始存档，可用 stow 收起");
+    if (item.source) throw Error("要保留这件物品的记录，请用 stow 收起");
     if (this.children(item.id).length) throw Error("物品中还有内容；可整体收起，或先移出里面的物品");
     if ([...this.items.values()].some((i) => i.refs.includes(item.id)))
       throw Error("另一个对象仍引用这件物品");
@@ -163,7 +163,7 @@ export class Cabin extends Space {
     if (!known) {
       const legacy = entry as RoomItem & { name?: string };
       item.props.name = legacy.name || entry.kind || entry.id;
-      item.state.legacy = { ...entry };
+      item.importedFurniture = { ...entry };
     }
     const desk =
       entry.kind === "computer" &&

@@ -1,7 +1,7 @@
 export const residentId = "whale";
 export const firstName = "鲸鱼娘的个人小站";
 export const initialSelf =
-  "我叫鲸鱼娘。刚搬进自己的小屋，对二次元有些兴趣，对主人有些好感。自己的生活、爱好和说话方式，留给以后的经历。";
+  "我叫鲸鱼娘，住在自己的小屋里，对二次元有些兴趣，对主人有些好感。我的爱好和说话方式会随着经历慢慢变化。";
 export const furniture = {
   bed: { name: "床", width: 39, x: 24, y: 84 },
   desk: { name: "书桌", width: 27, x: 76, y: 85 },
